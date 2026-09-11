@@ -18,12 +18,6 @@
       "sourceType": "github",
       "skillPath": "skills/pwa-development/SKILL.md",
       "computedHash": "2219041ce92f6361ba77eb06c9a927dc7a1ba48f40ff5132321a29c4154ebc7a"
-    },
-    "speckit-bundle": {
-      "source": "github/spec-kit-copilot",
-      "sourceType": "github",
-      "skillPath": "skills/speckit-bundle/SKILL.md",
-      "computedHash": "a03d790d6983ff4c1ed625e6b9cb7f2083d1be4a95ed345eff5ae5e2ce0c8458"
     }
   }
 }

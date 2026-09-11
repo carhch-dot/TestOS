@@ -1,0 +1,7 @@
+# Local Claude Code settings/credentials — never share these
+.claude/settings.local.json
+.claude/.credentials.json
+
+# Environment/secrets
+.env
+.env.local
