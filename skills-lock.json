@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "skills": {
+    "find-skills": {
+      "source": "vercel-labs/skills",
+      "sourceType": "github",
+      "skillPath": "skills/find-skills/SKILL.md",
+      "computedHash": "b146008599c31057cef1c145774cea5d5afb30e8f43fa802e47a4b461419aaaf"
+    },
+    "modern-web-guidance": {
+      "source": "googlechrome/modern-web-guidance",
+      "sourceType": "github",
+      "skillPath": "skills/modern-web-guidance/SKILL.md",
+      "computedHash": "fee4eb58a7347f64e053c8869bb2f9777f00942083cf8a3a80ddcd6959a18cb7"
+    },
+    "pwa-development": {
+      "source": "alinaqi/maggy",
+      "sourceType": "github",
+      "skillPath": "skills/pwa-development/SKILL.md",
+      "computedHash": "2219041ce92f6361ba77eb06c9a927dc7a1ba48f40ff5132321a29c4154ebc7a"
+    },
+    "speckit-bundle": {
+      "source": "github/spec-kit-copilot",
+      "sourceType": "github",
+      "skillPath": "skills/speckit-bundle/SKILL.md",
+      "computedHash": "a03d790d6983ff4c1ed625e6b9cb7f2083d1be4a95ed345eff5ae5e2ce0c8458"
+    }
+  }
+}
