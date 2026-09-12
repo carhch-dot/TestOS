@@ -22,17 +22,33 @@ export class RefreshTokenService {
    */
   async issue(userId: string): Promise<string> {
     const raw = randomBytes(32).toString('hex');
-    const tokenHash = createHash('sha256').update(raw).digest('hex');
     const expiresAt = new Date(Date.now() + REFRESH_TOKEN_TTL_MS);
 
     await this.prisma.refreshToken.create({
       data: {
         userId,
-        tokenHash,
+        tokenHash: this.hash(raw),
         expiresAt,
       },
     });
 
     return raw;
+  }
+
+  /**
+   * Revokes the refresh token matching the given raw value, if any.
+   * Idempotent and never reveals whether the token existed, was already
+   * revoked, or never matched anything — same "never leak token state"
+   * posture as login (Story 1.2, FR3/NFR1).
+   */
+  async revoke(rawToken: string): Promise<void> {
+    await this.prisma.refreshToken.updateMany({
+      where: { tokenHash: this.hash(rawToken) },
+      data: { revoked: true },
+    });
+  }
+
+  private hash(raw: string): string {
+    return createHash('sha256').update(raw).digest('hex');
   }
 }

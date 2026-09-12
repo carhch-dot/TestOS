@@ -4,6 +4,7 @@ import { PrismaModule } from '../prisma/prisma.module';
 import { BootstrapService } from './bootstrap.service';
 import { LoginController } from './login.controller';
 import { LoginService } from './login.service';
+import { LogoutController } from './logout.controller';
 import { RefreshTokenService } from './refresh-token.service';
 
 /**
@@ -31,7 +32,7 @@ import { RefreshTokenService } from './refresh-token.service';
       },
     }),
   ],
-  controllers: [LoginController],
+  controllers: [LoginController, LogoutController],
   providers: [BootstrapService, LoginService, RefreshTokenService],
 })
 export class AuthModule {}

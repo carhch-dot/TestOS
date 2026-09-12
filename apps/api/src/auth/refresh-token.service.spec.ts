@@ -11,9 +11,18 @@ type RefreshTokenCreateArgs = {
   };
 };
 
+type RefreshTokenUpdateManyArgs = {
+  where: { tokenHash: string };
+  data: { revoked: boolean };
+};
+
 type PrismaRefreshTokenMock = {
   refreshToken: {
     create: jest.Mock<Promise<unknown>, [RefreshTokenCreateArgs]>;
+    updateMany: jest.Mock<
+      Promise<{ count: number }>,
+      [RefreshTokenUpdateManyArgs]
+    >;
   };
 };
 
@@ -25,6 +34,9 @@ describe('RefreshTokenService', () => {
     prisma = {
       refreshToken: {
         create: jest.fn<Promise<unknown>, [RefreshTokenCreateArgs]>(),
+        updateMany: jest
+          .fn<Promise<{ count: number }>, [RefreshTokenUpdateManyArgs]>()
+          .mockResolvedValue({ count: 1 }),
       },
     };
 
@@ -60,5 +72,26 @@ describe('RefreshTokenService', () => {
     const second = await service.issue('user-1');
 
     expect(first).not.toBe(second);
+  });
+
+  describe('revoke', () => {
+    it('marks the row matching the raw token as revoked', async () => {
+      const raw = 'some-raw-refresh-token';
+
+      await service.revoke(raw);
+
+      expect(prisma.refreshToken.updateMany).toHaveBeenCalledTimes(1);
+      const { where, data } = prisma.refreshToken.updateMany.mock.calls[0][0];
+      expect(where.tokenHash).toBe(
+        createHash('sha256').update(raw).digest('hex'),
+      );
+      expect(data.revoked).toBe(true);
+    });
+
+    it('is idempotent when nothing matches (no error, no distinguishable outcome)', async () => {
+      prisma.refreshToken.updateMany.mockResolvedValue({ count: 0 });
+
+      await expect(service.revoke('unknown-token')).resolves.toBeUndefined();
+    });
   });
 });

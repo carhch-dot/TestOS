@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 09-11-2026 16:21
-last_updated: 09-12-2026 08:40
+last_updated: 09-12-2026 08:50
 project: TestOS
 project_key: NOKEY
 tracking_system: file-system
@@ -38,7 +38,7 @@ development_status:
   epic-1: in-progress
   1-1-arranque-del-sistema-y-primer-administrador: review
   1-2-login-con-email-y-contraseña: review
-  1-3-cerrar-sesión: backlog
+  1-3-cerrar-sesión: review
   1-4-bloqueo-temporal-por-intentos-fallidos: backlog
   1-5-renovación-transparente-de-sesión: backlog
   1-6-recuperación-de-contraseña: backlog
