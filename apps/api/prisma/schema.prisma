@@ -23,13 +23,17 @@ enum UsuarioStatus {
 }
 
 model Usuario {
-  id            String        @id @default(uuid())
-  email         String        @unique
-  passwordHash  String
-  role          UsuarioRole
-  status        UsuarioStatus @default(ACTIVE)
-  createdAt     DateTime      @default(now())
-  refreshTokens RefreshToken[]
+  id                  String        @id @default(uuid())
+  email               String        @unique
+  passwordHash        String
+  role                UsuarioRole
+  status              UsuarioStatus @default(ACTIVE)
+  // Lockout after failed attempts (FR2): a running counter + a lock-until
+  // timestamp, no separate attempt-history table (see spec Boundaries).
+  failedLoginAttempts Int           @default(0)
+  lockedUntil         DateTime?
+  createdAt           DateTime      @default(now())
+  refreshTokens       RefreshToken[]
 }
 
 // Persists only the SHA-256 hash of each issued refresh token (AD-5); the raw

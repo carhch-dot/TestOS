@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { PrismaModule } from '../prisma/prisma.module';
+import { MailModule } from '../mail/mail.module';
 import { BootstrapService } from './bootstrap.service';
 import { LoginController } from './login.controller';
 import { LoginService } from './login.service';
@@ -14,6 +15,7 @@ import { RefreshTokenService } from './refresh-token.service';
 @Module({
   imports: [
     PrismaModule,
+    MailModule,
     JwtModule.registerAsync({
       // useFactory runs during Nest's DI instantiation (inside
       // `NestFactory.create()`), so a missing secret fails the same way as
