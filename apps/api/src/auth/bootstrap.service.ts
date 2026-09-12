@@ -2,6 +2,7 @@ import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import * as argon2 from 'argon2';
 import { UsuarioRole, UsuarioStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { normalizeEmail } from '../common/normalize-email';
 
 /**
  * Auto-creates the first Administrator account from environment variables
@@ -40,7 +41,7 @@ export class BootstrapService implements OnApplicationBootstrap {
 
     await this.prisma.usuario.create({
       data: {
-        email: email.trim().toLowerCase(),
+        email: normalizeEmail(email),
         passwordHash,
         role: UsuarioRole.ADMINISTRATOR,
         status: UsuarioStatus.ACTIVE,

@@ -23,10 +23,23 @@ enum UsuarioStatus {
 }
 
 model Usuario {
-  id           String        @id @default(uuid())
-  email        String        @unique
-  passwordHash String
-  role         UsuarioRole
-  status       UsuarioStatus @default(ACTIVE)
-  createdAt    DateTime      @default(now())
+  id            String        @id @default(uuid())
+  email         String        @unique
+  passwordHash  String
+  role          UsuarioRole
+  status        UsuarioStatus @default(ACTIVE)
+  createdAt     DateTime      @default(now())
+  refreshTokens RefreshToken[]
+}
+
+// Persists only the SHA-256 hash of each issued refresh token (AD-5); the raw
+// value is returned to the client once at issuance and never stored.
+model RefreshToken {
+  id        String   @id @default(uuid())
+  userId    String
+  usuario   Usuario  @relation(fields: [userId], references: [id])
+  tokenHash String   @unique
+  expiresAt DateTime
+  revoked   Boolean  @default(false)
+  createdAt DateTime @default(now())
 }

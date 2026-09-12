@@ -1,13 +1,37 @@
 import { Module } from '@nestjs/common';
+import { JwtModule } from '@nestjs/jwt';
 import { PrismaModule } from '../prisma/prisma.module';
 import { BootstrapService } from './bootstrap.service';
+import { LoginController } from './login.controller';
+import { LoginService } from './login.service';
+import { RefreshTokenService } from './refresh-token.service';
 
 /**
- * AuthModule owns `Usuario` end to end (AD-1). No other module ever
- * injects Prisma to write it.
+ * AuthModule owns `Usuario` end to end (AD-1), and now also `RefreshToken`.
+ * No other module ever injects Prisma to write either.
  */
 @Module({
-  imports: [PrismaModule],
-  providers: [BootstrapService],
+  imports: [
+    PrismaModule,
+    JwtModule.registerAsync({
+      // useFactory runs during Nest's DI instantiation (inside
+      // `NestFactory.create()`), so a missing secret fails the same way as
+      // `PrismaService`'s missing `DATABASE_URL` — caught by main.ts's
+      // startup error handler instead of crashing at module-import time.
+      useFactory: () => {
+        const secret = process.env.JWT_SECRET;
+        if (!secret?.trim()) {
+          throw new Error('Missing required environment variable: JWT_SECRET');
+        }
+        return {
+          secret,
+          // `[ASSUMPTION: 15 minutes]` per AD-5.
+          signOptions: { expiresIn: '15m' },
+        };
+      },
+    }),
+  ],
+  controllers: [LoginController],
+  providers: [BootstrapService, LoginService, RefreshTokenService],
 })
 export class AuthModule {}
