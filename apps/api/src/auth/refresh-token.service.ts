@@ -1,5 +1,6 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { randomBytes, createHash } from 'crypto';
+import { RefreshToken } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 
 // `[ASSUMPTION: 15 minutes]` for the access token (AD-5); the refresh token
@@ -13,6 +14,8 @@ const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
  */
 @Injectable()
 export class RefreshTokenService {
+  private readonly logger = new Logger(RefreshTokenService.name);
+
   constructor(private readonly prisma: PrismaService) {}
 
   /**
@@ -44,6 +47,51 @@ export class RefreshTokenService {
   async revoke(rawToken: string): Promise<void> {
     await this.prisma.refreshToken.updateMany({
       where: { tokenHash: this.hash(rawToken) },
+      data: { revoked: true },
+    });
+  }
+
+  /**
+   * Looks up the row matching the given raw token's hash, if any. Story 1.5:
+   * `RenewalService` reads the row's `expiresAt`/`revoked`/`userId` itself
+   * rather than this service making any accept/reject decision.
+   */
+  async findByRawToken(rawToken: string): Promise<RefreshToken | null> {
+    return this.prisma.refreshToken.findUnique({
+      where: { tokenHash: this.hash(rawToken) },
+    });
+  }
+
+  /**
+   * Atomically consumes (revokes) the row with the given id, but only if it
+   * is not already revoked — an `updateMany` conditional on `revoked: false`
+   * rather than a plain read-then-write, so two concurrent callers racing on
+   * the same id can never both win. Returns `{ count: 1 }` for the caller
+   * that won, `{ count: 0 }` for one that lost the race or presented a token
+   * already revoked by a prior rotation/logout (both are "reuse" to the
+   * caller, per AD-5 — see Story 1.5's design notes).
+   */
+  async consume(id: string): Promise<{ count: number }> {
+    return this.prisma.refreshToken.updateMany({
+      where: { id, revoked: false },
+      data: { revoked: true },
+    });
+  }
+
+  /**
+   * Revokes every refresh token belonging to the given user, including ones
+   * unrelated to whichever token triggered the call. Used exclusively for
+   * reuse/replay detection (AD-5): presenting an already-consumed refresh
+   * token blocks all future renewals immediately, since it's indistinguishable
+   * from token theft (an already-valid access token keeps working until its
+   * own ~15-minute expiry — see `RenewalService`).
+   */
+  async revokeAllForUser(userId: string): Promise<void> {
+    this.logger.warn(
+      `Revoking all refresh tokens for user ${userId} (suspected replay)`,
+    );
+    await this.prisma.refreshToken.updateMany({
+      where: { userId, revoked: false },
       data: { revoked: true },
     });
   }

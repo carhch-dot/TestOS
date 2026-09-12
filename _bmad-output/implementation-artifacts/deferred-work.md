@@ -12,7 +12,15 @@
 
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-3-logout.md`
   summary: No cleanup/expiry job for revoked or expired RefreshToken rows — the table grows unboundedly as users log in and out.
-  evidence: Raised independently in both Story 1.2's review (FK is ON DELETE RESTRICT, would eventually block user deletion) and Story 1.3's review (no purge mechanism exists for revoked/expired rows). Real for a long-lived deployment, but there is no user-deletion feature yet for the FK concern to block, and building a cleanup job now is more than this story's scope. Revisit once the table's growth or a deletion feature makes it concrete.
+  evidence: Raised independently in Story 1.2's review (FK is ON DELETE RESTRICT), Story 1.3's review (no purge mechanism), and now Story 1.5 adds a rotation-on-every-renewal write path onto the same unbounded table. Real for a long-lived deployment, but there is no user-deletion feature yet for the FK concern to block, and building a cleanup job now is more than any one story's scope. Revisit once the table's growth or a deletion feature makes it concrete.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-5-transparent-session-renewal.md`
+  summary: The loser of a concurrent refresh-token race can revoke the winner's brand-new token if its chain-wide revocation write lands after the winner's new-token insert commits.
+  evidence: `RefreshTokenService.revokeAllForUser`'s `where: { userId }` has no time cutoff excluding rows created during the exact rotation in progress. A fully correct fix needs per-user serialization (a `SELECT ... FOR UPDATE` advisory lock around the whole consume-then-issue-or-revoke sequence) — real architecture, not a simple correction. Only matters when a token is already being actively replayed concurrently (something has already gone wrong); the fallback outcome (both parties end up logged out) is an acceptable fail-safe for an already-anomalous condition.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-5-transparent-session-renewal.md`
+  summary: If JWT signing or refresh-token issuance throws after the old refresh token was already consumed/revoked, the caller is left without a working session despite nothing malicious happening.
+  evidence: Low-probability (would typically coincide with a broader systemic failure — DB down, OOM — that breaks other endpoints too); a fully atomic fix needs a DB transaction wrapping sign+issue, disproportionate for the likelihood involved at this stage.
 
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-4-lockout-after-failed-attempts.md`
   summary: Small residual timing gap — a wrong-password attempt on a real, unlocked account now performs one extra DB write that the unknown-email/non-ACTIVE paths don't.

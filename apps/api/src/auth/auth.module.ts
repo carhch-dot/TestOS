@@ -7,6 +7,8 @@ import { LoginController } from './login.controller';
 import { LoginService } from './login.service';
 import { LogoutController } from './logout.controller';
 import { RefreshTokenService } from './refresh-token.service';
+import { RenewalController } from './renewal.controller';
+import { RenewalService } from './renewal.service';
 
 /**
  * AuthModule owns `Usuario` end to end (AD-1), and now also `RefreshToken`.
@@ -34,7 +36,12 @@ import { RefreshTokenService } from './refresh-token.service';
       },
     }),
   ],
-  controllers: [LoginController, LogoutController],
-  providers: [BootstrapService, LoginService, RefreshTokenService],
+  controllers: [LoginController, LogoutController, RenewalController],
+  providers: [
+    BootstrapService,
+    LoginService,
+    RefreshTokenService,
+    RenewalService,
+  ],
 })
 export class AuthModule {}
