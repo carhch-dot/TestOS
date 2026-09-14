@@ -101,3 +101,15 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-11-password-policy.md`
   summary: `PasswordResetService.confirmReset` never re-checks the target `Usuario.status === ACTIVE` before resetting a password.
   evidence: Pre-existing since Story 1.6, not introduced by spec-1-11 (only surfaced during its review, which added the `Usuario` fetch for the policy check but didn't add or remove this check). Bounded impact: `confirmReset` never touches `status` itself, so a deactivated target stays unable to log in regardless — `LoginService` independently gates on `status === ACTIVE`.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-1-immutable-audit-log.md`
+  summary: `AuditService.record()`'s central atomicity guarantee (an audit row lives or dies with the transaction it accompanies) is asserted by the spec but never exercised against a real `prisma.$transaction` — the unit test only proves a rejected `tx` call propagates rather than being swallowed, not that a real rollback actually leaves zero rows.
+  evidence: Every existing test in this codebase runs against a fully mocked `PrismaService` with no live-DB dependency; adding one test that requires a reachable Postgres would break that portability property for `npm test`. Needs dedicated integration-test infrastructure (e.g. a `test:e2e`-style suite gated behind `DATABASE_URL`) rather than an ad-hoc addition to the unit-test file — worth building once a real domain module (Epic 3+) becomes the first actual caller and there's a concrete write path to test end-to-end.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-1-immutable-audit-log.md`
+  summary: `Prisma.TransactionClient` is a structural subtype of `PrismaClient`, and `PrismaService extends PrismaClient` — so a future caller can pass the plain top-level `PrismaService` to `AuditService.record(tx, ...)` instead of a real transaction client, and TypeScript will not catch it. This would silently defeat the atomicity guarantee that is this story's entire reason to exist.
+  evidence: No cheap fix exists — a nominal/branded wrapper type would need Prisma-level type machinery not used anywhere else in this codebase, and would not stop a determined caller from casting around it either. This is fundamentally a code-review-discipline concern for whoever writes the first real caller (Epic 3+): reviewers of that PR must verify `record()` is called with a value actually obtained from `prisma.$transaction(async (tx) => ...)`, not `PrismaService` itself.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-1-immutable-audit-log.md`
+  summary: No plan yet for how Epic 7's bulk-reimport exception ("audits its run as one event, not per item," per AD-3) will fit `RegistroAuditoria`'s current one-row-per-entity shape.
+  evidence: Speculative this far out — Epics 3 through 6 come first, and Epic 7 hasn't been specced yet. Revisit when that story is actually planned rather than guessing at a batch-event shape (a batch id column? a new `TipoAccion` value? a different `entidadId` convention?) now.

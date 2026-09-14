@@ -42,6 +42,7 @@ model Usuario {
   refreshTokens          RefreshToken[]
   passwordResetTokens    PasswordResetToken[]
   invitationTokens       InvitationToken[]
+  registrosAuditoria     RegistroAuditoria[]
 }
 
 // Persists only the SHA-256 hash of each issued refresh token (AD-5); the raw
@@ -90,4 +91,52 @@ model InvitationToken {
   createdAt DateTime @default(now())
 
   @@index([userId])
+}
+
+enum TipoAccion {
+  CREATE
+  UPDATE
+  DELETE
+}
+
+// Append-only audit trail (spec-2-1, FR-27–FR-30): the sole write path is
+// `AuditService.record(tx, params)`, always inside the caller's own
+// transaction — no controller, no HTTP endpoint, no trigger/constraint
+// enforces immutability here, same posture as RefreshToken/
+// PasswordResetToken/InvitationToken above (enforced by there being no code
+// path that ever updates or deletes a row).
+//
+// `entidad`/`entidadId` are plain strings, not enums/FKs: this table spans
+// many different entity tables from future epics (ItemConfiguracion,
+// Relacion, SolicitudCambio, ...), none of which exist yet, so a single
+// typed relation is impossible and a new entity type never requires a
+// migration to this module (mirrors AD-8's JSONB rationale). `usuarioId` is
+// the one real FK — always a real acting user, never nullable; there is no
+// "system actor" case in this story's scope. It defaults to `ON DELETE
+// RESTRICT` (Prisma's default for a required relation): once a Usuario has
+// performed any audited action, that row can never be hard-deleted. Currently
+// unreachable (no delete-user feature exists anywhere in this codebase, only
+// deactivate/reactivate) but a real, permanent consequence to know about if
+// one is ever built.
+model RegistroAuditoria {
+  id         String     @id @default(uuid())
+  usuarioId  String
+  usuario    Usuario    @relation(fields: [usuarioId], references: [id])
+  tipoAccion TipoAccion
+  entidad    String
+  entidadId  String
+  // Caller-shaped JSON; AuditService enforces only this outer envelope, not
+  // any before/after structure inside it (matches AD-3's "no module invents
+  // its own reporting shape" concern, which is about the envelope, not its
+  // payload contents).
+  cambios    Json
+  fecha      DateTime   @default(now())
+
+  @@index([usuarioId])
+  // Composite, not a standalone `entidad` index: Postgres can use this
+  // index's leading column alone for entidad-only queries too (leftmost
+  // prefix rule), and "history of this one entity" (entidad + entidadId
+  // together) is the primary lookup FR-28/the epic's stated goal imply.
+  @@index([entidad, entidadId])
+  @@index([fecha])
 }
