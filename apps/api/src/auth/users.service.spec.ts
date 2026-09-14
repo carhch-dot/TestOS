@@ -5,9 +5,11 @@ import {
   UsersService,
   USER_NOT_FOUND_MESSAGE,
   PENDING_VERIFICATION_CONFLICT_MESSAGE,
+  FORCE_RESET_CONFLICT_MESSAGE,
 } from './users.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { RefreshTokenService } from './refresh-token.service';
+import { PasswordResetService } from './password-reset.service';
 
 type Usuario = {
   id: string;
@@ -48,6 +50,9 @@ describe('UsersService', () => {
   let refreshTokenService: {
     revokeAllForUser: jest.Mock<Promise<void>, [string]>;
   };
+  let passwordResetService: {
+    requestReset: jest.Mock<Promise<void>, [string]>;
+  };
   let service: UsersService;
 
   beforeEach(async () => {
@@ -64,12 +69,18 @@ describe('UsersService', () => {
         .fn<Promise<void>, [string]>()
         .mockResolvedValue(undefined),
     };
+    passwordResetService = {
+      requestReset: jest
+        .fn<Promise<void>, [string]>()
+        .mockResolvedValue(undefined),
+    };
 
     const moduleRef = await Test.createTestingModule({
       providers: [
         UsersService,
         { provide: PrismaService, useValue: prisma },
         { provide: RefreshTokenService, useValue: refreshTokenService },
+        { provide: PasswordResetService, useValue: passwordResetService },
       ],
     }).compile();
 
@@ -402,6 +413,88 @@ describe('UsersService', () => {
       ).rejects.toThrow(USER_NOT_FOUND_MESSAGE);
       expect(prisma.usuario.update).not.toHaveBeenCalled();
       expect(refreshTokenService.revokeAllForUser).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('forcePasswordReset', () => {
+    it('delegates to PasswordResetService.requestReset(email) for an ACTIVE target', async () => {
+      const usuario = makeUsuario({
+        status: 'ACTIVE',
+        email: 'target@example.com',
+      });
+      prisma.usuario.findUnique.mockResolvedValue(usuario);
+
+      const result = await service.forcePasswordReset('user-1');
+
+      expect(passwordResetService.requestReset).toHaveBeenCalledWith(
+        'target@example.com',
+      );
+      expect(result.status).toBe('ACTIVE');
+      expect(result.id).toBe('user-1');
+    });
+
+    it('never mutates the Usuario row itself', async () => {
+      const usuario = makeUsuario({ status: 'ACTIVE' });
+      prisma.usuario.findUnique.mockResolvedValue(usuario);
+
+      await service.forcePasswordReset('user-1');
+
+      expect(prisma.usuario.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects a PENDING_VERIFICATION target with a conflict, calling PasswordResetService for nothing', async () => {
+      prisma.usuario.findUnique.mockResolvedValue(
+        makeUsuario({ status: 'PENDING_VERIFICATION' }),
+      );
+
+      await expect(service.forcePasswordReset('user-1')).rejects.toThrow(
+        ConflictException,
+      );
+      await expect(service.forcePasswordReset('user-1')).rejects.toThrow(
+        FORCE_RESET_CONFLICT_MESSAGE,
+      );
+      expect(passwordResetService.requestReset).not.toHaveBeenCalled();
+    });
+
+    it('rejects a DEACTIVATED target with a conflict, calling PasswordResetService for nothing', async () => {
+      prisma.usuario.findUnique.mockResolvedValue(
+        makeUsuario({ status: 'DEACTIVATED' }),
+      );
+
+      await expect(service.forcePasswordReset('user-1')).rejects.toThrow(
+        ConflictException,
+      );
+      await expect(service.forcePasswordReset('user-1')).rejects.toThrow(
+        FORCE_RESET_CONFLICT_MESSAGE,
+      );
+      expect(passwordResetService.requestReset).not.toHaveBeenCalled();
+    });
+
+    it('applies to a currently-LOCKED (still ACTIVE) target', async () => {
+      const usuario = makeUsuario({
+        status: 'ACTIVE',
+        lockedUntil: new Date(Date.now() + 60_000),
+      });
+      prisma.usuario.findUnique.mockResolvedValue(usuario);
+
+      const result = await service.forcePasswordReset('user-1');
+
+      expect(passwordResetService.requestReset).toHaveBeenCalledWith(
+        usuario.email,
+      );
+      expect(result.status).toBe('ACTIVE');
+    });
+
+    it('rejects an unknown id with a 404, calling PasswordResetService for nothing', async () => {
+      prisma.usuario.findUnique.mockResolvedValue(null);
+
+      await expect(service.forcePasswordReset('unknown')).rejects.toThrow(
+        NotFoundException,
+      );
+      await expect(service.forcePasswordReset('unknown')).rejects.toThrow(
+        USER_NOT_FOUND_MESSAGE,
+      );
+      expect(passwordResetService.requestReset).not.toHaveBeenCalled();
     });
   });
 });

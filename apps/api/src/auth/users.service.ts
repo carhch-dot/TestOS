@@ -6,6 +6,7 @@ import {
 import { Usuario, UsuarioRole, UsuarioStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { RefreshTokenService } from './refresh-token.service';
+import { PasswordResetService } from './password-reset.service';
 
 // Not a real `UsuarioStatus` enum value anywhere in the schema (spec
 // Boundaries) — folds the lockout timer into the four-state view the epic's
@@ -47,6 +48,14 @@ export const USER_NOT_FOUND_MESSAGE = 'User not found';
 export const PENDING_VERIFICATION_CONFLICT_MESSAGE =
   'Cannot change the status of a user pending verification.';
 
+// spec-1-10: only an ACTIVE target can be forced through the reset flow —
+// PENDING_VERIFICATION/DEACTIVATED targets get this explicit conflict
+// instead of forgot-password's silent no-op (spec Boundaries: an
+// authenticated Manager/Administrator can already see the target's status
+// via GET /users, so there's no enumeration risk to hide behind).
+export const FORCE_RESET_CONFLICT_MESSAGE =
+  'Cannot force a password reset for a user who is not active.';
+
 /**
  * Implements spec-1-8: `list` returns every `Usuario` (paginated, no
  * `passwordHash`, `effectiveStatus` computed) and `deactivate`/`reactivate`
@@ -64,6 +73,7 @@ export class UsersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly refreshTokenService: RefreshTokenService,
+    private readonly passwordResetService: PasswordResetService,
   ) {}
 
   async list(page: number, pageSize: number): Promise<UsersListResult> {
@@ -183,6 +193,42 @@ export class UsersService {
     await this.refreshTokenService.revokeAllForUser(id);
 
     return this.toStatusResult(updated);
+  }
+
+  /**
+   * spec-1-10: lets a Manager/Administrator trigger the identical
+   * self-service reset flow (Story 1.6) for another user, without knowing
+   * that user's password. Delegates to `PasswordResetService.requestReset`
+   * unchanged — same token/email mechanism, not a parallel implementation
+   * (spec Approach) — so `PasswordResetService`/`PasswordResetToken` are
+   * never modified here.
+   *
+   * Only an `ACTIVE` target qualifies; `PENDING_VERIFICATION`/`DEACTIVATED`
+   * targets get an explicit conflict instead of `requestReset`'s own silent
+   * no-op for a non-ACTIVE match, because that silence exists to avoid
+   * enumeration for an unauthenticated caller — irrelevant here, since the
+   * caller is an authenticated Manager/Administrator who can already see the
+   * target's status via `GET /users` (spec Boundaries).
+   *
+   * No self-targeting guard, unlike `deactivate`/`changeRole`: forcing your
+   * own reset carries none of their lockout/privilege-escalation risk (spec
+   * Boundaries), so any Manager/Administrator may target any user including
+   * themselves.
+   */
+  async forcePasswordReset(id: string): Promise<UserStatusResult> {
+    const usuario = await this.prisma.usuario.findUnique({ where: { id } });
+
+    if (!usuario) {
+      throw new NotFoundException(USER_NOT_FOUND_MESSAGE);
+    }
+
+    if (usuario.status !== UsuarioStatus.ACTIVE) {
+      throw new ConflictException(FORCE_RESET_CONFLICT_MESSAGE);
+    }
+
+    await this.passwordResetService.requestReset(usuario.email);
+
+    return this.toStatusResult(usuario);
   }
 
   private toListItem(usuario: Usuario): UserListItem {

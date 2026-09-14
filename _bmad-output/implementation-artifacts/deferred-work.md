@@ -73,3 +73,11 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-9-change-user-role.md`
   summary: A demoted or deactivated user's already-issued access token keeps working with their old role/session validity for up to its ~15-minute life — `changeRole`/`deactivate` revoke refresh tokens (blocking renewal) but cannot invalidate an already-signed stateless JWT.
   evidence: Inherent to the short-lived-JWT design accepted since Story 1.5 (claims go stale by design, refreshed only at renewal) — true of `deactivate` too, but more security-relevant for role changes specifically: a just-caught malicious or compromised Administrator keeps elevated privileges in-flight briefly. A real fix needs token revocation infrastructure (e.g. a short-lived denylist) not built anywhere in this codebase; disproportionate for a single story.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-10-force-password-reset.md`
+  summary: `UsersService.forcePasswordReset` checks the target's status, then `PasswordResetService.requestReset` independently re-checks it — if the status flips in between (a concurrent admin action), `requestReset` silently no-ops but `forcePasswordReset` still returns `200` using its stale pre-fetch, misleading the caller into thinking the email was sent.
+  evidence: Narrow race (requires another admin action landing in the exact window between two back-to-back DB reads). A proper fix needs either a transaction (same pre-existing no-`$transaction`-anywhere pattern already logged repeatedly above) or changing `PasswordResetService.requestReset`'s return contract, which spec-1-10 explicitly keeps unmodified by design (reuses Story 1.6's mechanism as-is).
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-10-force-password-reset.md`
+  summary: An authenticated Manager/Administrator can loop over every user id and fire a reset email at each of them via `POST /users/:id/force-reset-password`, with no throttle.
+  evidence: Same systemic, app-wide no-rate-limiting gap already tracked from Story 1.4's review and extended to `forgot-password`/`reset-password` in Story 1.6 — this new endpoint inherits it, not a defect introduced by this story specifically.

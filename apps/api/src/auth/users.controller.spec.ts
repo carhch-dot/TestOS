@@ -31,16 +31,17 @@ function makeRequest(sub: string): AuthenticatedRequest {
 type HttpMethod = 'get' | 'post';
 
 // Shared by the RBAC rejection tests and the real-guard-chain test below —
-// hoisted once so the three Manager-or-Administrator routes can't drift out
-// of sync between them.
-const THREE_ROUTES: Array<[HttpMethod, string]> = [
+// hoisted once so the Manager-or-Administrator routes can't drift out of
+// sync between them.
+const MANAGER_OR_ADMIN_ROUTES: Array<[HttpMethod, string]> = [
   ['get', '/users'],
   ['post', '/users/target-1/deactivate'],
   ['post', '/users/target-1/reactivate'],
+  ['post', '/users/target-1/force-reset-password'],
 ];
 
-// `POST /users/:id/role` (spec-1-9) is Administrator-only, unlike the three
-// routes above — kept out of THREE_ROUTES so the real-guard-chain test's
+// `POST /users/:id/role` (spec-1-9) is Administrator-only, unlike the routes
+// above — kept out of MANAGER_OR_ADMIN_ROUTES so the real-guard-chain test's
 // "MANAGER succeeds" expectation isn't accidentally applied to it. Still
 // exercised by the overridden-guard RBAC rejection tests below, since those
 // only assert on guard wiring (401/403), not on which roles pass.
@@ -68,6 +69,7 @@ describe('UsersController', () => {
     deactivate: jest.Mock;
     reactivate: jest.Mock;
     changeRole: jest.Mock;
+    forcePasswordReset: jest.Mock;
   };
   let controller: UsersController;
 
@@ -95,6 +97,12 @@ describe('UsersController', () => {
         id: 'target-1',
         email: 'target@example.com',
         role: UsuarioRole.MANAGER,
+        status: 'ACTIVE',
+      }),
+      forcePasswordReset: jest.fn().mockResolvedValue({
+        id: 'target-1',
+        email: 'target@example.com',
+        role: UsuarioRole.EDITOR,
         status: 'ACTIVE',
       }),
     };
@@ -312,8 +320,43 @@ describe('UsersController', () => {
     });
   });
 
+  describe('forcePasswordReset (dispatch)', () => {
+    it('delegates to UsersService.forcePasswordReset', async () => {
+      const result = await controller.forcePasswordReset('target-1');
+
+      expect(usersService.forcePasswordReset).toHaveBeenCalledWith('target-1');
+      expect(result.status).toBe('ACTIVE');
+    });
+
+    it('does not block self-targeting (unlike deactivate/changeRole)', async () => {
+      await controller.forcePasswordReset('caller-1');
+
+      expect(usersService.forcePasswordReset).toHaveBeenCalledWith('caller-1');
+    });
+
+    it('propagates a ConflictException raised by the service unchanged', async () => {
+      usersService.forcePasswordReset.mockRejectedValue(
+        new ConflictException('not active'),
+      );
+
+      await expect(controller.forcePasswordReset('target-1')).rejects.toThrow(
+        ConflictException,
+      );
+    });
+
+    it('propagates a NotFoundException raised by the service unchanged', async () => {
+      usersService.forcePasswordReset.mockRejectedValue(
+        new NotFoundException('User not found'),
+      );
+
+      await expect(controller.forcePasswordReset('unknown')).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+  });
+
   describe('RBAC rejection (overridden guards)', () => {
-    const routes = [...THREE_ROUTES, ...ROLE_ROUTE];
+    const routes = [...MANAGER_OR_ADMIN_ROUTES, ...ROLE_ROUTE];
 
     it.each(routes)(
       'rejects %s %s with 403 when RolesGuard denies the caller (Editor/Read-only)',
@@ -383,7 +426,7 @@ describe('UsersController', () => {
     // `JwtService.verifyAsync` to hand back role claims. A dropped
     // `@Roles(...)` decorator or a swapped guard order would fail this test
     // even though every other test above stays green.
-    it('lets MANAGER/ADMINISTRATOR tokens reach the service and rejects EDITOR/READ_ONLY with 403, for all three routes', async () => {
+    it('lets MANAGER/ADMINISTRATOR tokens reach the service and rejects EDITOR/READ_ONLY with 403, for all Manager-or-Administrator routes', async () => {
       const verifyAsync = jest.fn();
 
       const moduleRef = await Test.createTestingModule({
@@ -400,7 +443,7 @@ describe('UsersController', () => {
       await app.init();
       const server = app.getHttpServer() as Server;
 
-      for (const [method, path] of THREE_ROUTES) {
+      for (const [method, path] of MANAGER_OR_ADMIN_ROUTES) {
         for (const role of [UsuarioRole.MANAGER, UsuarioRole.ADMINISTRATOR]) {
           verifyAsync.mockResolvedValueOnce({
             sub: 'caller-1',
@@ -425,6 +468,49 @@ describe('UsersController', () => {
             .expect(403);
         }
       }
+
+      await app.close();
+    });
+
+    // The table-driven test above only checks status codes across all four
+    // Manager-or-Administrator routes; this confirms the real handler for
+    // POST /users/:id/force-reset-password actually ran and returned the
+    // service's payload, not a silently no-op'd success (same gap class
+    // already flagged and patched for spec-1-9's equivalent test).
+    it('returns the service payload for a successful force-reset-password call', async () => {
+      const verifyAsync = jest.fn().mockResolvedValue({
+        sub: 'caller-1',
+        email: 'caller@example.com',
+        role: UsuarioRole.ADMINISTRATOR,
+      });
+
+      const moduleRef = await Test.createTestingModule({
+        controllers: [UsersController],
+        providers: [
+          { provide: UsersService, useValue: usersService },
+          JwtAuthGuard,
+          RolesGuard,
+          { provide: JwtService, useValue: { verifyAsync } },
+        ],
+      }).compile();
+
+      const app = moduleRef.createNestApplication();
+      await app.init();
+
+      const response = await request(app.getHttpServer() as Server)
+        .post('/users/target-1/force-reset-password')
+        .set('Authorization', 'Bearer a-valid-token')
+        .expect(200);
+
+      expect(response.body).toEqual({
+        id: 'target-1',
+        email: 'target@example.com',
+        role: UsuarioRole.EDITOR,
+        status: 'ACTIVE',
+      });
+      expect(usersService.forcePasswordReset).toHaveBeenCalledWith(
+        'target-1',
+      );
 
       await app.close();
     });

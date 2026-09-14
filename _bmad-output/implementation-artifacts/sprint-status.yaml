@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 09-11-2026 16:21
-last_updated: 09-14-2026 11:45
+last_updated: 09-14-2026 14:25
 project: TestOS
 project_key: NOKEY
 tracking_system: file-system
@@ -45,7 +45,7 @@ development_status:
   1-7-invitar-usuarios-y-activar-la-cuenta: review
   1-8-listar-desactivar-y-reactivar-usuarios: review
   1-9-cambiar-rol-de-usuario: review
-  1-10-forzar-reseteo-de-contraseña-de-otro-usuario: backlog
+  1-10-forzar-reseteo-de-contraseña-de-otro-usuario: review
   1-11-política-de-contraseña: backlog
   epic-1-retrospective: optional
 

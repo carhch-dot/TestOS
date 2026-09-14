@@ -133,9 +133,9 @@ describe('InviteController', () => {
     });
 
     it('rejects malformed input (missing body) without calling the service', async () => {
-      await expect(
-        controller.invite(undefined as never),
-      ).rejects.toThrow(BadRequestException);
+      await expect(controller.invite(undefined as never)).rejects.toThrow(
+        BadRequestException,
+      );
       expect(inviteService.invite).not.toHaveBeenCalled();
     });
   });

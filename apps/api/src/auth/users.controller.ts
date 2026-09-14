@@ -51,12 +51,13 @@ export class ChangeRoleRequestDto {
 
 /**
  * `GET /users`, `POST /users/:id/deactivate`, `POST /users/:id/reactivate`,
- * `POST /users/:id/role` — all RBAC-protected, reusing
- * `JwtAuthGuard`/`RolesGuard`/`@Roles(...)` exactly as built in Story 1.7
- * (spec Boundaries: no new auth infrastructure). `list`/`deactivate`/
- * `reactivate` allow Manager or Administrator; `role` (spec-1-9) is
- * Administrator-only — "exclusivo de Administrador" per the epic AC, unlike
- * deactivate/reactivate. Lives under `apps/api/src/auth/` and is registered
+ * `POST /users/:id/role`, `POST /users/:id/force-reset-password` — all
+ * RBAC-protected, reusing `JwtAuthGuard`/`RolesGuard`/`@Roles(...)` exactly
+ * as built in Story 1.7 (spec Boundaries: no new auth infrastructure).
+ * `list`/`deactivate`/`reactivate`/`forcePasswordReset` allow Manager or
+ * Administrator; `role` (spec-1-9) is Administrator-only — "exclusivo de
+ * Administrador" per the epic AC, unlike the other four. Lives under
+ * `apps/api/src/auth/` and is registered
  * in `AuthModule` — `AuthModule` remains the only writer of `Usuario`
  * (AD-1) — but is deliberately its own top-level `/users` route, not
  * nested under `/auth`.
@@ -73,10 +74,7 @@ export class UsersController {
     @Query('page') pageRaw?: string,
     @Query('pageSize') pageSizeRaw?: string,
   ): Promise<UsersListResult> {
-    const page = Math.min(
-      parsePositiveInt(pageRaw, DEFAULT_PAGE),
-      MAX_PAGE,
-    );
+    const page = Math.min(parsePositiveInt(pageRaw, DEFAULT_PAGE), MAX_PAGE);
     const pageSize = Math.min(
       parsePositiveInt(pageSizeRaw, DEFAULT_PAGE_SIZE),
       MAX_PAGE_SIZE,
@@ -136,6 +134,18 @@ export class UsersController {
     }
 
     return this.usersService.changeRole(id, body.role);
+  }
+
+  @Post(':id/force-reset-password')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UsuarioRole.MANAGER, UsuarioRole.ADMINISTRATOR)
+  @HttpCode(HttpStatus.OK)
+  async forcePasswordReset(@Param('id') id: string): Promise<UserStatusResult> {
+    // No self-targeting guard here, unlike deactivate/changeRole (spec
+    // Boundaries): forcing your own reset carries none of their
+    // lockout/privilege-escalation risk, so any Manager/Administrator may
+    // target any user including themselves.
+    return this.usersService.forcePasswordReset(id);
   }
 }
 
