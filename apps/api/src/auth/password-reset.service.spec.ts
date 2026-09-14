@@ -411,12 +411,12 @@ describe('PasswordResetService', () => {
       prisma.passwordResetToken.findUnique.mockResolvedValue(resetToken);
       prisma.usuario.findUnique.mockResolvedValue(makeUsuario());
 
-      await expect(
-        service.confirmReset('raw-token', 'short1'),
-      ).rejects.toThrow(BadRequestException);
-      await expect(
-        service.confirmReset('raw-token', 'short1'),
-      ).rejects.toThrow(/at least 8 characters/);
+      await expect(service.confirmReset('raw-token', 'short1')).rejects.toThrow(
+        BadRequestException,
+      );
+      await expect(service.confirmReset('raw-token', 'short1')).rejects.toThrow(
+        /at least 8 characters/,
+      );
 
       expect(prisma.passwordResetToken.updateMany).not.toHaveBeenCalled();
       expect(prisma.usuario.update).not.toHaveBeenCalled();
@@ -463,9 +463,9 @@ describe('PasswordResetService', () => {
       prisma.passwordResetToken.findUnique.mockResolvedValue(resetToken);
       prisma.usuario.findUnique.mockResolvedValue(makeUsuario());
 
-      await expect(
-        service.confirmReset('raw-token', 'short1'),
-      ).rejects.toThrow(BadRequestException);
+      await expect(service.confirmReset('raw-token', 'short1')).rejects.toThrow(
+        BadRequestException,
+      );
       expect(prisma.passwordResetToken.updateMany).not.toHaveBeenCalled();
 
       prisma.usuario.update.mockResolvedValue(makeUsuario());

@@ -508,9 +508,7 @@ describe('UsersController', () => {
         role: UsuarioRole.EDITOR,
         status: 'ACTIVE',
       });
-      expect(usersService.forcePasswordReset).toHaveBeenCalledWith(
-        'target-1',
-      );
+      expect(usersService.forcePasswordReset).toHaveBeenCalledWith('target-1');
 
       await app.close();
     });

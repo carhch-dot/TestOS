@@ -1,6 +1,9 @@
 import { BadRequestException } from '@nestjs/common';
 import * as argon2 from 'argon2';
-import { enforcePasswordPolicy, PASSWORD_REUSED_MESSAGE } from './password-policy';
+import {
+  enforcePasswordPolicy,
+  PASSWORD_REUSED_MESSAGE,
+} from './password-policy';
 
 describe('enforcePasswordPolicy', () => {
   const ORIGINAL_ENV = process.env;

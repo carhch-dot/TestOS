@@ -113,3 +113,11 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-2-1-immutable-audit-log.md`
   summary: No plan yet for how Epic 7's bulk-reimport exception ("audits its run as one event, not per item," per AD-3) will fit `RegistroAuditoria`'s current one-row-per-entity shape.
   evidence: Speculative this far out — Epics 3 through 6 come first, and Epic 7 hasn't been specced yet. Revisit when that story is actually planned rather than guessing at a batch-event shape (a batch id column? a new `TipoAccion` value? a different `entidadId` convention?) now.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-2-query-audit-history.md`
+  summary: No note anywhere flags that a future module's `cambios` payload (Epic 3+, caller-shaped JSON per `AuditService.record`) will be visible to every authenticated role via `GET /audit`, with no redaction mechanism.
+  evidence: Speculative — no real `record()` caller exists yet (spec-2-1). Worth a conscious check by whoever builds the first real caller (Inventory/Relations/Change Requests/Import) on what's appropriate to put in `cambios`, given it's readable by Editor/Read-only too.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-2-query-audit-history.md`
+  summary: `GET /audit` doesn't guard against duplicate query keys (e.g. `?usuarioId=a&usuarioId=b`), which NestJS's `@Query()` parses into a string array — Prisma would receive an unexpected type and likely surface an unhandled `500` instead of a clean `400`.
+  evidence: Narrow (requires a client deliberately or accidentally sending duplicate keys) and no existing controller anywhere in this codebase guards against this class of input either — would be a new validation pattern, not a one-line fix. Worth addressing codebase-wide (e.g. a shared query-parsing helper) rather than one-off here.
