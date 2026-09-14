@@ -41,7 +41,7 @@ development_status:
   1-3-cerrar-sesión: review
   1-4-bloqueo-temporal-por-intentos-fallidos: review
   1-5-renovación-transparente-de-sesión: review
-  1-6-recuperación-de-contraseña: backlog
+  1-6-recuperación-de-contraseña: review
   1-7-invitar-usuarios-y-activar-la-cuenta: backlog
   1-8-listar-desactivar-y-reactivar-usuarios: backlog
   1-9-cambiar-rol-de-usuario: backlog

@@ -33,3 +33,15 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-4-lockout-after-failed-attempts.md`
   summary: The lockout mechanism itself can be weaponized against legitimate users — knowing only a victim's email, an attacker can keep re-triggering the lock indefinitely.
   evidence: An inherent, well-known trade-off of any consecutive-failed-attempt lockout design, already implicit in FR2's original requirement (which specifies exactly this mechanism without mentioning IP throttling, CAPTCHA, or an admin/self-unlock path). Worth a future product decision (e.g. an admin-unlock path, or a self-unlock-via-email link) rather than a code fix to this story.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-6-password-recovery.md`
+  summary: `POST /auth/forgot-password` and `POST /auth/reset-password` have no rate limiting, so an attacker can flood a victim's inbox with reset emails or brute-force the (256-bit, so infeasible in practice) reset token.
+  evidence: Same systemic, app-wide gap already tracked from Story 1.4's review (no `@nestjs/throttler` or equivalent anywhere yet) — these two new public endpoints inherit it, not a defect introduced by this story specifically.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-6-password-recovery.md`
+  summary: `PasswordResetToken` has no cleanup/expiry job — the table grows unboundedly, and faster than `RefreshToken` since every `forgot-password` call (including retries) inserts a new row regardless of whether any prior token was ever used.
+  evidence: Same class of gap already tracked for `RefreshToken` (Story 1.3's entry above); real for a long-lived deployment, but building a shared cleanup job now is more than any one story's scope. Revisit both tables together once growth or a deletion feature makes it concrete.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-6-password-recovery.md`
+  summary: `PasswordResetService.confirmReset` runs its consume-token, hash+update-password, and revoke-sessions steps as sequential awaits rather than inside a single transaction; a failure between steps can permanently burn the token without changing the password, or change the password without revoking old sessions.
+  evidence: Same pre-existing pattern as `RenewalService.renew`'s unwrapped consume-then-issue sequence (spec-1-5 entry above) — no `$transaction` call exists anywhere in this codebase yet. Low-probability (would typically coincide with a broader systemic failure), and a proper fix is a codebase-wide transactional convention, not a one-story patch.

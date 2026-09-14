@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { randomBytes, createHash } from 'crypto';
 import { RefreshToken } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { generateRawToken, hashToken } from '../common/hash-token';
 
 // `[ASSUMPTION: 15 minutes]` for the access token (AD-5); the refresh token
 // itself is long-lived relative to it so a client isn't forced to
@@ -24,13 +24,13 @@ export class RefreshTokenService {
    * while only its SHA-256 hash is persisted.
    */
   async issue(userId: string): Promise<string> {
-    const raw = randomBytes(32).toString('hex');
+    const raw = generateRawToken();
     const expiresAt = new Date(Date.now() + REFRESH_TOKEN_TTL_MS);
 
     await this.prisma.refreshToken.create({
       data: {
         userId,
-        tokenHash: this.hash(raw),
+        tokenHash: hashToken(raw),
         expiresAt,
       },
     });
@@ -46,7 +46,7 @@ export class RefreshTokenService {
    */
   async revoke(rawToken: string): Promise<void> {
     await this.prisma.refreshToken.updateMany({
-      where: { tokenHash: this.hash(rawToken) },
+      where: { tokenHash: hashToken(rawToken) },
       data: { revoked: true },
     });
   }
@@ -58,7 +58,7 @@ export class RefreshTokenService {
    */
   async findByRawToken(rawToken: string): Promise<RefreshToken | null> {
     return this.prisma.refreshToken.findUnique({
-      where: { tokenHash: this.hash(rawToken) },
+      where: { tokenHash: hashToken(rawToken) },
     });
   }
 
@@ -80,23 +80,20 @@ export class RefreshTokenService {
 
   /**
    * Revokes every refresh token belonging to the given user, including ones
-   * unrelated to whichever token triggered the call. Used exclusively for
-   * reuse/replay detection (AD-5): presenting an already-consumed refresh
+   * unrelated to whichever token triggered the call. Used both for
+   * reuse/replay detection (AD-5) — presenting an already-consumed refresh
    * token blocks all future renewals immediately, since it's indistinguishable
    * from token theft (an already-valid access token keeps working until its
-   * own ~15-minute expiry — see `RenewalService`).
+   * own ~15-minute expiry — see `RenewalService`) — and for a routine
+   * password change (NFR1), which is not itself a replay signal. The log
+   * message stays neutral here; callers that detect actual reuse/replay log
+   * that context themselves before calling this.
    */
   async revokeAllForUser(userId: string): Promise<void> {
-    this.logger.warn(
-      `Revoking all refresh tokens for user ${userId} (suspected replay)`,
-    );
+    this.logger.warn(`Revoking all refresh tokens for user ${userId}`);
     await this.prisma.refreshToken.updateMany({
       where: { userId, revoked: false },
       data: { revoked: true },
     });
-  }
-
-  private hash(raw: string): string {
-    return createHash('sha256').update(raw).digest('hex');
   }
 }

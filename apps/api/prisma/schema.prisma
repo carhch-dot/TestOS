@@ -34,6 +34,7 @@ model Usuario {
   lockedUntil         DateTime?
   createdAt           DateTime      @default(now())
   refreshTokens       RefreshToken[]
+  passwordResetTokens PasswordResetToken[]
 }
 
 // Persists only the SHA-256 hash of each issued refresh token (AD-5); the raw
@@ -45,6 +46,23 @@ model RefreshToken {
   tokenHash String   @unique
   expiresAt DateTime
   revoked   Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+// Persists only the SHA-256 hash of each issued password-reset token (same
+// posture as RefreshToken above); the raw value is emailed to the user once
+// and never stored. A row is created only for a real ACTIVE-user match
+// (spec-1-6) — `forgot-password` never creates one for an unknown email or a
+// non-ACTIVE account.
+model PasswordResetToken {
+  id        String   @id @default(uuid())
+  userId    String
+  usuario   Usuario  @relation(fields: [userId], references: [id])
+  tokenHash String   @unique
+  expiresAt DateTime
+  used      Boolean  @default(false)
   createdAt DateTime @default(now())
 
   @@index([userId])

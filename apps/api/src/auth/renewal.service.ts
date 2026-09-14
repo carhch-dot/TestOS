@@ -1,4 +1,4 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { UsuarioStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -31,6 +31,8 @@ export interface RenewalResult {
  */
 @Injectable()
 export class RenewalService {
+  private readonly logger = new Logger(RenewalService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
@@ -48,6 +50,9 @@ export class RenewalService {
     // to be expired — presenting an already-consumed token is the signal of
     // compromise, regardless of whatever else is also true about it.
     if (row.revoked) {
+      this.logger.warn(
+        `Refresh token reuse detected for user ${row.userId} (suspected replay)`,
+      );
       await this.refreshTokenService.revokeAllForUser(row.userId);
       throw new UnauthorizedException(REFRESH_FAILED_MESSAGE);
     }
@@ -84,6 +89,9 @@ export class RenewalService {
     // AD-5, so the whole chain is revoked.
     const { count } = await this.refreshTokenService.consume(row.id);
     if (count === 0) {
+      this.logger.warn(
+        `Refresh token reuse detected for user ${row.userId} (suspected replay)`,
+      );
       await this.refreshTokenService.revokeAllForUser(row.userId);
       throw new UnauthorizedException(REFRESH_FAILED_MESSAGE);
     }

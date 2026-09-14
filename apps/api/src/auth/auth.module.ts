@@ -6,13 +6,16 @@ import { BootstrapService } from './bootstrap.service';
 import { LoginController } from './login.controller';
 import { LoginService } from './login.service';
 import { LogoutController } from './logout.controller';
+import { PasswordResetController } from './password-reset.controller';
+import { PasswordResetService } from './password-reset.service';
 import { RefreshTokenService } from './refresh-token.service';
 import { RenewalController } from './renewal.controller';
 import { RenewalService } from './renewal.service';
 
 /**
- * AuthModule owns `Usuario` end to end (AD-1), and now also `RefreshToken`.
- * No other module ever injects Prisma to write either.
+ * AuthModule owns `Usuario` end to end (AD-1), and now also `RefreshToken`
+ * and `PasswordResetToken`. No other module ever injects Prisma to write any
+ * of them.
  */
 @Module({
   imports: [
@@ -36,10 +39,16 @@ import { RenewalService } from './renewal.service';
       },
     }),
   ],
-  controllers: [LoginController, LogoutController, RenewalController],
+  controllers: [
+    LoginController,
+    LogoutController,
+    PasswordResetController,
+    RenewalController,
+  ],
   providers: [
     BootstrapService,
     LoginService,
+    PasswordResetService,
     RefreshTokenService,
     RenewalService,
   ],
