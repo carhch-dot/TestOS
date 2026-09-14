@@ -70,6 +70,21 @@ import { UsersService } from './users.service';
     RolesGuard,
     UsersService,
   ],
-  exports: [JwtAuthGuard, RolesGuard],
+  // `JwtModule` is re-exported too: `JwtAuthGuard`'s own constructor depends
+  // on `JwtService`, and a module that only re-exports `JwtAuthGuard` itself
+  // (without also re-exporting the module that satisfies its dependency)
+  // leaves that dependency unresolvable for a cross-module consumer like
+  // `AuditModule` — this was a real app-bootstrap failure, not caught by
+  // any unit test (every `@UseGuards(JwtAuthGuard)` unit test overrides the
+  // guard directly, never exercising the real module graph).
+  // `JwtModule` is re-exported too: `JwtAuthGuard`'s own constructor depends
+  // on `JwtService`, and a module that only re-exports `JwtAuthGuard` itself
+  // (without also re-exporting the module that satisfies its dependency)
+  // leaves that dependency unresolvable for a cross-module consumer like
+  // `AuditModule` — this was a real app-bootstrap failure, not caught by
+  // any unit test (every `@UseGuards(JwtAuthGuard)` unit test overrides the
+  // guard directly, never exercising the real module graph). Verified by
+  // `app.module.spec.ts`, which boots the real module graph.
+  exports: [JwtModule, JwtAuthGuard, RolesGuard],
 })
 export class AuthModule {}
