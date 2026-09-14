@@ -1,7 +1,9 @@
 import { Test } from '@nestjs/testing';
 import {
+  BadRequestException,
   ConflictException,
   ForbiddenException,
+  NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
@@ -9,7 +11,12 @@ import request from 'supertest';
 import type { Server } from 'http';
 import type { Test as SupertestTest } from 'supertest';
 import { UsuarioRole } from '@prisma/client';
-import { UsersController, SELF_DEACTIVATION_MESSAGE } from './users.controller';
+import {
+  UsersController,
+  SELF_DEACTIVATION_MESSAGE,
+  SELF_ROLE_CHANGE_MESSAGE,
+  INVALID_ROLE_MESSAGE,
+} from './users.controller';
 import { UsersService } from './users.service';
 import { JwtAuthGuard } from './jwt-auth.guard';
 import type { AuthenticatedRequest } from './jwt-auth.guard';
@@ -24,11 +31,21 @@ function makeRequest(sub: string): AuthenticatedRequest {
 type HttpMethod = 'get' | 'post';
 
 // Shared by the RBAC rejection tests and the real-guard-chain test below —
-// hoisted once so the three routes can't drift out of sync between them.
+// hoisted once so the three Manager-or-Administrator routes can't drift out
+// of sync between them.
 const THREE_ROUTES: Array<[HttpMethod, string]> = [
   ['get', '/users'],
   ['post', '/users/target-1/deactivate'],
   ['post', '/users/target-1/reactivate'],
+];
+
+// `POST /users/:id/role` (spec-1-9) is Administrator-only, unlike the three
+// routes above — kept out of THREE_ROUTES so the real-guard-chain test's
+// "MANAGER succeeds" expectation isn't accidentally applied to it. Still
+// exercised by the overridden-guard RBAC rejection tests below, since those
+// only assert on guard wiring (401/403), not on which roles pass.
+const ROLE_ROUTE: Array<[HttpMethod, string]> = [
+  ['post', '/users/target-1/role'],
 ];
 
 // A typed stand-in for `request(server)[method](path)` — indexing a real
@@ -50,6 +67,7 @@ describe('UsersController', () => {
     list: jest.Mock;
     deactivate: jest.Mock;
     reactivate: jest.Mock;
+    changeRole: jest.Mock;
   };
   let controller: UsersController;
 
@@ -71,6 +89,12 @@ describe('UsersController', () => {
         id: 'target-1',
         email: 'target@example.com',
         role: UsuarioRole.EDITOR,
+        status: 'ACTIVE',
+      }),
+      changeRole: jest.fn().mockResolvedValue({
+        id: 'target-1',
+        email: 'target@example.com',
+        role: UsuarioRole.MANAGER,
         status: 'ACTIVE',
       }),
     };
@@ -202,8 +226,94 @@ describe('UsersController', () => {
     });
   });
 
+  describe('changeRole (dispatch)', () => {
+    it('delegates to UsersService.changeRole when target differs from caller and role is valid', async () => {
+      const result = await controller.changeRole(
+        'target-1',
+        { role: UsuarioRole.MANAGER },
+        makeRequest('caller-1'),
+      );
+
+      expect(usersService.changeRole).toHaveBeenCalledWith(
+        'target-1',
+        UsuarioRole.MANAGER,
+      );
+      expect(result.role).toBe(UsuarioRole.MANAGER);
+    });
+
+    it('rejects self-role-change with a conflict, never calling the service', async () => {
+      await expect(
+        controller.changeRole(
+          'caller-1',
+          { role: UsuarioRole.MANAGER },
+          makeRequest('caller-1'),
+        ),
+      ).rejects.toThrow(ConflictException);
+      await expect(
+        controller.changeRole(
+          'caller-1',
+          { role: UsuarioRole.MANAGER },
+          makeRequest('caller-1'),
+        ),
+      ).rejects.toThrow(SELF_ROLE_CHANGE_MESSAGE);
+      expect(usersService.changeRole).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['missing role', {} as { role: UsuarioRole }],
+      ['non-string role', { role: 123 } as unknown as { role: UsuarioRole }],
+      [
+        'role not in the UsuarioRole enum',
+        { role: 'SUPERUSER' } as unknown as { role: UsuarioRole },
+      ],
+    ])(
+      'rejects a malformed/invalid role (%s) with a 400, never calling the service',
+      async (_label, body) => {
+        await expect(
+          controller.changeRole('target-1', body, makeRequest('caller-1')),
+        ).rejects.toThrow(BadRequestException);
+        await expect(
+          controller.changeRole('target-1', body, makeRequest('caller-1')),
+        ).rejects.toThrow(INVALID_ROLE_MESSAGE);
+        expect(usersService.changeRole).not.toHaveBeenCalled();
+      },
+    );
+
+    it('propagates errors raised by the service unchanged', async () => {
+      usersService.changeRole.mockRejectedValue(
+        new NotFoundException('User not found'),
+      );
+
+      await expect(
+        controller.changeRole(
+          'unknown',
+          { role: UsuarioRole.MANAGER },
+          makeRequest('caller-1'),
+        ),
+      ).rejects.toThrow('User not found');
+    });
+
+    it('rejects an invalid role before the self-change check when both apply (400, not 409)', async () => {
+      await expect(
+        controller.changeRole(
+          'caller-1',
+          { role: 'SUPERUSER' } as unknown as { role: UsuarioRole },
+          makeRequest('caller-1'),
+        ),
+      ).rejects.toThrow(BadRequestException);
+      await expect(
+        controller.changeRole(
+          'caller-1',
+          { role: 'SUPERUSER' } as unknown as { role: UsuarioRole },
+          makeRequest('caller-1'),
+        ),
+      ).rejects.toThrow(INVALID_ROLE_MESSAGE);
+      expect(usersService.changeRole).not.toHaveBeenCalled();
+    });
+  });
+
   describe('RBAC rejection (overridden guards)', () => {
-    const routes = THREE_ROUTES;
+    const routes = [...THREE_ROUTES, ...ROLE_ROUTE];
 
     it.each(routes)(
       'rejects %s %s with 403 when RolesGuard denies the caller (Editor/Read-only)',
@@ -314,6 +424,72 @@ describe('UsersController', () => {
             .set('Authorization', 'Bearer a-valid-token')
             .expect(403);
         }
+      }
+
+      await app.close();
+    });
+
+    // spec-1-9: `POST /users/:id/role` is Administrator-only, unlike the
+    // three Manager-or-Administrator routes above — a dropped `@Roles(...)`
+    // override (e.g. leaving Manager allowed) would fail this test.
+    it('lets ADMINISTRATOR tokens reach the service and rejects MANAGER/EDITOR/READ_ONLY with 403, for POST /users/:id/role', async () => {
+      const verifyAsync = jest.fn();
+
+      const moduleRef = await Test.createTestingModule({
+        controllers: [UsersController],
+        providers: [
+          { provide: UsersService, useValue: usersService },
+          JwtAuthGuard,
+          RolesGuard,
+          { provide: JwtService, useValue: { verifyAsync } },
+        ],
+      }).compile();
+
+      const app = moduleRef.createNestApplication();
+      await app.init();
+      const server = app.getHttpServer() as Server;
+      const path = '/users/target-role-user/role';
+
+      verifyAsync.mockResolvedValueOnce({
+        sub: 'admin-1',
+        email: 'admin@example.com',
+        role: UsuarioRole.ADMINISTRATOR,
+      });
+      const successResponse = await request(server)
+        .post(path)
+        .send({ role: UsuarioRole.EDITOR })
+        .set('Authorization', 'Bearer a-valid-token')
+        .expect(200);
+
+      // Not just the status code: confirm the real handler actually ran and
+      // returned the service's payload, not a silently no-op'd success.
+      expect(successResponse.body).toEqual({
+        id: 'target-1',
+        email: 'target@example.com',
+        role: UsuarioRole.MANAGER,
+        status: 'ACTIVE',
+      });
+      expect(usersService.changeRole).toHaveBeenCalledWith(
+        'target-role-user',
+        UsuarioRole.EDITOR,
+      );
+
+      for (const role of [
+        UsuarioRole.MANAGER,
+        UsuarioRole.EDITOR,
+        UsuarioRole.READ_ONLY,
+      ]) {
+        verifyAsync.mockResolvedValueOnce({
+          sub: 'caller-2',
+          email: 'caller2@example.com',
+          role,
+        });
+
+        await request(server)
+          .post(path)
+          .send({ role: UsuarioRole.EDITOR })
+          .set('Authorization', 'Bearer a-valid-token')
+          .expect(403);
       }
 
       await app.close();

@@ -1,5 +1,6 @@
 import { Test } from '@nestjs/testing';
 import { ConflictException, NotFoundException } from '@nestjs/common';
+import { UsuarioRole } from '@prisma/client';
 import {
   UsersService,
   USER_NOT_FOUND_MESSAGE,
@@ -313,6 +314,94 @@ describe('UsersService', () => {
         USER_NOT_FOUND_MESSAGE,
       );
       expect(prisma.usuario.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('changeRole', () => {
+    it('updates Usuario.role and revokes all refresh tokens', async () => {
+      const usuario = makeUsuario({ role: 'EDITOR' });
+      prisma.usuario.findUnique.mockResolvedValue(usuario);
+      prisma.usuario.update.mockResolvedValue({
+        ...usuario,
+        role: 'MANAGER',
+      });
+
+      const result = await service.changeRole('user-1', UsuarioRole.MANAGER);
+
+      expect(prisma.usuario.update).toHaveBeenCalledWith({
+        where: { id: 'user-1' },
+        data: { role: 'MANAGER' },
+      });
+      expect(refreshTokenService.revokeAllForUser).toHaveBeenCalledWith(
+        'user-1',
+      );
+      expect(result.role).toBe('MANAGER');
+    });
+
+    it('applies to a PENDING_VERIFICATION target (no status restriction)', async () => {
+      const usuario = makeUsuario({
+        role: 'EDITOR',
+        status: 'PENDING_VERIFICATION',
+      });
+      prisma.usuario.findUnique.mockResolvedValue(usuario);
+      prisma.usuario.update.mockResolvedValue({
+        ...usuario,
+        role: 'READ_ONLY',
+      });
+
+      const result = await service.changeRole('user-1', UsuarioRole.READ_ONLY);
+
+      expect(prisma.usuario.update).toHaveBeenCalled();
+      expect(refreshTokenService.revokeAllForUser).toHaveBeenCalledWith(
+        'user-1',
+      );
+      expect(result.role).toBe('READ_ONLY');
+    });
+
+    it('applies to a DEACTIVATED target (no status restriction)', async () => {
+      const usuario = makeUsuario({
+        role: 'EDITOR',
+        status: 'DEACTIVATED',
+      });
+      prisma.usuario.findUnique.mockResolvedValue(usuario);
+      prisma.usuario.update.mockResolvedValue({
+        ...usuario,
+        role: 'ADMINISTRATOR',
+      });
+
+      const result = await service.changeRole(
+        'user-1',
+        UsuarioRole.ADMINISTRATOR,
+      );
+
+      expect(prisma.usuario.update).toHaveBeenCalled();
+      expect(result.role).toBe('ADMINISTRATOR');
+    });
+
+    it('is a no-op on Usuario.role when the target already has the requested role, but still revokes tokens', async () => {
+      const usuario = makeUsuario({ role: 'EDITOR' });
+      prisma.usuario.findUnique.mockResolvedValue(usuario);
+
+      const result = await service.changeRole('user-1', UsuarioRole.EDITOR);
+
+      expect(result.role).toBe('EDITOR');
+      expect(prisma.usuario.update).not.toHaveBeenCalled();
+      expect(refreshTokenService.revokeAllForUser).toHaveBeenCalledWith(
+        'user-1',
+      );
+    });
+
+    it('rejects an unknown id with a 404, mutating nothing and revoking nothing', async () => {
+      prisma.usuario.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.changeRole('unknown', UsuarioRole.MANAGER),
+      ).rejects.toThrow(NotFoundException);
+      await expect(
+        service.changeRole('unknown', UsuarioRole.MANAGER),
+      ).rejects.toThrow(USER_NOT_FOUND_MESSAGE);
+      expect(prisma.usuario.update).not.toHaveBeenCalled();
+      expect(refreshTokenService.revokeAllForUser).not.toHaveBeenCalled();
     });
   });
 });

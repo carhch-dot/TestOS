@@ -150,6 +150,41 @@ export class UsersService {
     return this.toStatusResult(updated);
   }
 
+  /**
+   * Sets `Usuario.role` to `role` and unconditionally revokes every refresh
+   * token for that user (spec Boundaries) — the immediacy lever that makes
+   * the new role apply on the user's very next login/renewal rather than
+   * waiting out their current access token's ~15-minute life. Applies to a
+   * target in any `status` (unlike `deactivate`/`reactivate`, spec
+   * Boundaries: "no status restriction"). Setting the same role the user
+   * already has skips the Prisma write (nothing to mutate) but still revokes
+   * tokens — same idempotent-but-not-inert posture the spec calls out.
+   *
+   * Self-role-change is rejected by `UsersController` before this service is
+   * even called (it needs `request.user.sub`, which this service's
+   * `changeRole(id, role)` signature deliberately does not take — mirrors
+   * `deactivate`'s self-deactivation split, spec Code Map).
+   */
+  async changeRole(id: string, role: UsuarioRole): Promise<UserStatusResult> {
+    const usuario = await this.prisma.usuario.findUnique({ where: { id } });
+
+    if (!usuario) {
+      throw new NotFoundException(USER_NOT_FOUND_MESSAGE);
+    }
+
+    const updated =
+      usuario.role === role
+        ? usuario
+        : await this.prisma.usuario.update({
+            where: { id },
+            data: { role },
+          });
+
+    await this.refreshTokenService.revokeAllForUser(id);
+
+    return this.toStatusResult(updated);
+  }
+
   private toListItem(usuario: Usuario): UserListItem {
     return {
       id: usuario.id,

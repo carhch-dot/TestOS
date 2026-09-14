@@ -65,3 +65,11 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-8-list-deactivate-reactivate-users.md`
   summary: There is no dedicated action to unlock a `LOCKED` (temporarily-locked) user early — `reactivate` no-ops whenever the target's raw `status` is already `ACTIVE`, which it still is while merely locked, so an admin has no direct way to clear `lockedUntil` before it naturally expires.
   evidence: A `deactivate`-then-`reactivate` round trip on the same user works as an unintentional, non-obvious workaround today (deactivate doesn't no-op on a `LOCKED` target; the follow-up reactivate hits the real `DEACTIVATED → ACTIVE` path, which does clear the lock). Worth a dedicated action in a future story — Story 1.10 ("force password reset for another user") is a natural place to also clear a lock, since both are admin-assisted account-recovery actions.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-9-change-user-role.md`
+  summary: `UsersService.changeRole`'s `usuario.update` and `refreshTokenService.revokeAllForUser` run as separate un-transactioned awaits; a failure between them leaves the new role committed without the promised session revocation.
+  evidence: Same pre-existing no-`$transaction`-anywhere pattern already logged repeatedly (spec-1-5/1-6/1-7/1-8 entries above). A proper fix is the same codebase-wide transactional convention noted there, not a one-story patch.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-9-change-user-role.md`
+  summary: A demoted or deactivated user's already-issued access token keeps working with their old role/session validity for up to its ~15-minute life — `changeRole`/`deactivate` revoke refresh tokens (blocking renewal) but cannot invalidate an already-signed stateless JWT.
+  evidence: Inherent to the short-lived-JWT design accepted since Story 1.5 (claims go stale by design, refreshed only at renewal) — true of `deactivate` too, but more security-relevant for role changes specifically: a just-caught malicious or compromised Administrator keeps elevated privileges in-flight briefly. A real fix needs token revocation infrastructure (e.g. a short-lived denylist) not built anywhere in this codebase; disproportionate for a single story.

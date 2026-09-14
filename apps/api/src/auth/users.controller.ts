@@ -1,4 +1,6 @@
 import {
+  BadRequestException,
+  Body,
   ConflictException,
   Controller,
   Get,
@@ -39,14 +41,25 @@ const MAX_PAGE = 200;
 export const SELF_DEACTIVATION_MESSAGE =
   'You cannot deactivate your own account.';
 
+export const SELF_ROLE_CHANGE_MESSAGE = 'You cannot change your own role.';
+
+export const INVALID_ROLE_MESSAGE = 'Invalid role';
+
+export class ChangeRoleRequestDto {
+  role!: UsuarioRole;
+}
+
 /**
- * `GET /users`, `POST /users/:id/deactivate`, `POST /users/:id/reactivate` —
- * all RBAC-protected (Manager or Administrator), reusing
+ * `GET /users`, `POST /users/:id/deactivate`, `POST /users/:id/reactivate`,
+ * `POST /users/:id/role` — all RBAC-protected, reusing
  * `JwtAuthGuard`/`RolesGuard`/`@Roles(...)` exactly as built in Story 1.7
- * (spec Boundaries: no new auth infrastructure). Lives under
- * `apps/api/src/auth/` and is registered in `AuthModule` — `AuthModule`
- * remains the only writer of `Usuario` (AD-1) — but is deliberately its own
- * top-level `/users` route, not nested under `/auth`.
+ * (spec Boundaries: no new auth infrastructure). `list`/`deactivate`/
+ * `reactivate` allow Manager or Administrator; `role` (spec-1-9) is
+ * Administrator-only — "exclusivo de Administrador" per the epic AC, unlike
+ * deactivate/reactivate. Lives under `apps/api/src/auth/` and is registered
+ * in `AuthModule` — `AuthModule` remains the only writer of `Usuario`
+ * (AD-1) — but is deliberately its own top-level `/users` route, not
+ * nested under `/auth`.
  */
 @Controller('users')
 export class UsersController {
@@ -96,6 +109,33 @@ export class UsersController {
   @HttpCode(HttpStatus.OK)
   async reactivate(@Param('id') id: string): Promise<UserStatusResult> {
     return this.usersService.reactivate(id);
+  }
+
+  @Post(':id/role')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UsuarioRole.ADMINISTRATOR)
+  @HttpCode(HttpStatus.OK)
+  async changeRole(
+    @Param('id') id: string,
+    @Body() body: ChangeRoleRequestDto,
+    @Req() request: AuthenticatedRequest,
+  ): Promise<UserStatusResult> {
+    if (
+      typeof body?.role !== 'string' ||
+      !Object.values(UsuarioRole).includes(body.role)
+    ) {
+      throw new BadRequestException(INVALID_ROLE_MESSAGE);
+    }
+
+    // Self-role-change is blocked before ever touching the service/DB
+    // (spec Boundaries), same self-action guard as `deactivate` above --
+    // `request.user.sub` is only available here in the controller, not in
+    // `UsersService.changeRole(id, role)`.
+    if (request.user?.sub === id) {
+      throw new ConflictException(SELF_ROLE_CHANGE_MESSAGE);
+    }
+
+    return this.usersService.changeRole(id, body.role);
   }
 }
 
