@@ -3,6 +3,9 @@ import { JwtModule } from '@nestjs/jwt';
 import { PrismaModule } from '../prisma/prisma.module';
 import { MailModule } from '../mail/mail.module';
 import { BootstrapService } from './bootstrap.service';
+import { InviteController } from './invite.controller';
+import { InviteService } from './invite.service';
+import { JwtAuthGuard } from './jwt-auth.guard';
 import { LoginController } from './login.controller';
 import { LoginService } from './login.service';
 import { LogoutController } from './logout.controller';
@@ -11,11 +14,16 @@ import { PasswordResetService } from './password-reset.service';
 import { RefreshTokenService } from './refresh-token.service';
 import { RenewalController } from './renewal.controller';
 import { RenewalService } from './renewal.service';
+import { RolesGuard } from './roles.guard';
 
 /**
- * AuthModule owns `Usuario` end to end (AD-1), and now also `RefreshToken`
- * and `PasswordResetToken`. No other module ever injects Prisma to write any
- * of them.
+ * AuthModule owns `Usuario` end to end (AD-1), and now also `RefreshToken`,
+ * `PasswordResetToken`, and `InvitationToken`. No other module ever injects
+ * Prisma to write any of them.
+ *
+ * `JwtAuthGuard`/`RolesGuard` are registered as ordinary providers, not a
+ * global `APP_GUARD` — only routes that explicitly `@UseGuards(...)` them
+ * (currently just `POST /auth/invite`) are protected (spec-1-7 Boundaries).
  */
 @Module({
   imports: [
@@ -40,6 +48,7 @@ import { RenewalService } from './renewal.service';
     }),
   ],
   controllers: [
+    InviteController,
     LoginController,
     LogoutController,
     PasswordResetController,
@@ -47,10 +56,14 @@ import { RenewalService } from './renewal.service';
   ],
   providers: [
     BootstrapService,
+    InviteService,
+    JwtAuthGuard,
     LoginService,
     PasswordResetService,
     RefreshTokenService,
     RenewalService,
+    RolesGuard,
   ],
+  exports: [JwtAuthGuard, RolesGuard],
 })
 export class AuthModule {}

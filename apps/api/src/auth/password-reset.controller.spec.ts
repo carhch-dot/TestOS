@@ -43,9 +43,7 @@ describe('PasswordResetController', () => {
     });
 
     it('returns the same generic message without calling the service when email is missing', async () => {
-      const result = await controller.forgotPassword(
-        {} as { email: string },
-      );
+      const result = await controller.forgotPassword({} as { email: string });
 
       expect(passwordResetService.requestReset).not.toHaveBeenCalled();
       expect(result).toEqual({ message: FORGOT_PASSWORD_MESSAGE });

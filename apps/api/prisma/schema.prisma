@@ -35,6 +35,7 @@ model Usuario {
   createdAt           DateTime      @default(now())
   refreshTokens       RefreshToken[]
   passwordResetTokens PasswordResetToken[]
+  invitationTokens    InvitationToken[]
 }
 
 // Persists only the SHA-256 hash of each issued refresh token (AD-5); the raw
@@ -57,6 +58,23 @@ model RefreshToken {
 // (spec-1-6) — `forgot-password` never creates one for an unknown email or a
 // non-ACTIVE account.
 model PasswordResetToken {
+  id        String   @id @default(uuid())
+  userId    String
+  usuario   Usuario  @relation(fields: [userId], references: [id])
+  tokenHash String   @unique
+  expiresAt DateTime
+  used      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+// Persists only the SHA-256 hash of each issued invitation/activation token
+// (same shape and posture as PasswordResetToken above); the raw value is
+// emailed once and never stored. Created on invite, and re-created (with the
+// prior unused row invalidated) when a still-PENDING_VERIFICATION user is
+// re-invited (spec-1-7) — no duplicate Usuario row on resend.
+model InvitationToken {
   id        String   @id @default(uuid())
   userId    String
   usuario   Usuario  @relation(fields: [userId], references: [id])

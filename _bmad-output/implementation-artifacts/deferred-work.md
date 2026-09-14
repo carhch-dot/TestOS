@@ -45,3 +45,15 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-6-password-recovery.md`
   summary: `PasswordResetService.confirmReset` runs its consume-token, hash+update-password, and revoke-sessions steps as sequential awaits rather than inside a single transaction; a failure between steps can permanently burn the token without changing the password, or change the password without revoking old sessions.
   evidence: Same pre-existing pattern as `RenewalService.renew`'s unwrapped consume-then-issue sequence (spec-1-5 entry above) — no `$transaction` call exists anywhere in this codebase yet. Low-probability (would typically coincide with a broader systemic failure), and a proper fix is a codebase-wide transactional convention, not a one-story patch.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-7-invite-users-and-activate-account.md`
+  summary: `InvitationToken` has no cleanup/expiry job — the table grows unboundedly, same as `RefreshToken` and `PasswordResetToken`.
+  evidence: Same class of gap already tracked for those two tables (Story 1.3/1.6 entries above); every `forgot-password`-style resend also inserts a new row. Revisit all three tables together once growth or a deletion feature makes it concrete.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-7-invite-users-and-activate-account.md`
+  summary: `POST /auth/invite` and `POST /auth/activate` have no rate limiting.
+  evidence: Same systemic, app-wide gap already tracked from Story 1.4's review and extended to `forgot-password`/`reset-password` in Story 1.6 — these two new endpoints inherit it, not a defect introduced by this story specifically.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-7-invite-users-and-activate-account.md`
+  summary: `InviteService.invite`'s resend branch runs its role-update, token-invalidation, and new-token-create steps as separate un-transactioned awaits; two concurrent resends for the same still-pending user could each interleave and leave two simultaneously-valid `InvitationToken` rows for that one user (a mostly-cosmetic redundancy — `activate()`'s status re-check, added in this story's review, independently prevents either row from being usable against an already-activated account).
+  evidence: Same pre-existing no-`$transaction`-anywhere pattern already logged for `PasswordResetService.confirmReset`/`RenewalService.renew` (spec-1-5/1-6 entries above) and for `activate()`'s own consume-then-update sequence in this same story. A proper fix is the same codebase-wide transactional convention noted there, not a one-story patch.

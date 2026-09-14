@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 09-11-2026 16:21
-last_updated: 09-12-2026 10:05
+last_updated: 09-14-2026 09:30
 project: TestOS
 project_key: NOKEY
 tracking_system: file-system
@@ -42,7 +42,7 @@ development_status:
   1-4-bloqueo-temporal-por-intentos-fallidos: review
   1-5-renovación-transparente-de-sesión: review
   1-6-recuperación-de-contraseña: review
-  1-7-invitar-usuarios-y-activar-la-cuenta: backlog
+  1-7-invitar-usuarios-y-activar-la-cuenta: review
   1-8-listar-desactivar-y-reactivar-usuarios: backlog
   1-9-cambiar-rol-de-usuario: backlog
   1-10-forzar-reseteo-de-contraseña-de-otro-usuario: backlog
