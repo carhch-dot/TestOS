@@ -15,6 +15,8 @@ import { RefreshTokenService } from './refresh-token.service';
 import { RenewalController } from './renewal.controller';
 import { RenewalService } from './renewal.service';
 import { RolesGuard } from './roles.guard';
+import { UsersController } from './users.controller';
+import { UsersService } from './users.service';
 
 /**
  * AuthModule owns `Usuario` end to end (AD-1), and now also `RefreshToken`,
@@ -23,7 +25,9 @@ import { RolesGuard } from './roles.guard';
  *
  * `JwtAuthGuard`/`RolesGuard` are registered as ordinary providers, not a
  * global `APP_GUARD` — only routes that explicitly `@UseGuards(...)` them
- * (currently just `POST /auth/invite`) are protected (spec-1-7 Boundaries).
+ * (`POST /auth/invite` since spec-1-7, and `GET /users`,
+ * `POST /users/:id/deactivate`, `POST /users/:id/reactivate` since spec-1-8)
+ * are protected.
  */
 @Module({
   imports: [
@@ -53,6 +57,7 @@ import { RolesGuard } from './roles.guard';
     LogoutController,
     PasswordResetController,
     RenewalController,
+    UsersController,
   ],
   providers: [
     BootstrapService,
@@ -63,6 +68,7 @@ import { RolesGuard } from './roles.guard';
     RefreshTokenService,
     RenewalService,
     RolesGuard,
+    UsersService,
   ],
   exports: [JwtAuthGuard, RolesGuard],
 })
