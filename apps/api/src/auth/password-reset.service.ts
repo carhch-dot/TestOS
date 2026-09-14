@@ -6,9 +6,15 @@ import { normalizeEmail } from '../common/normalize-email';
 import { generateRawToken, hashToken } from '../common/hash-token';
 import { RefreshTokenService } from './refresh-token.service';
 import { MailService } from '../mail/mail.service';
+import { enforcePasswordPolicy } from '../common/password-policy';
 
 // `[ASSUMPTION: 1 hour]` per spec Intent.
 const RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
+
+// `[ASSUMPTION: 3]` per spec-1-11 Boundaries (matches the epic's
+// `[ASSUMPTION: 3]`), overridable via env var — mirrors LOGIN_LOCKOUT_*'s
+// env-var-with-default pattern in login.service.ts.
+const DEFAULT_PASSWORD_HISTORY_COUNT = 3;
 
 /**
  * Implements FR5 (password recovery).
@@ -21,13 +27,18 @@ const RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
  * guessable identifier, so the residual DB-write timing gap between "found"
  * and "not found" is the same already-accepted class as login's.
  *
- * `confirmReset` atomically consumes a token — the same conditional-update
- * pattern as `RefreshTokenService.consume` (`updateMany` on `used: false`,
- * checking the affected count) rather than a plain read-then-write, so two
- * concurrent requests presenting the same token can never both win. On
- * success it sets the new password hash with `argon2` and revokes every
- * refresh token for the user (NFR1: a password change invalidates every
- * existing session, not just this token).
+ * `confirmReset` fetches the target Usuario and enforces the password policy
+ * (FR11, spec-1-11) — minimum length and non-reuse of the current password
+ * or any of the last `PASSWORD_HISTORY_COUNT` passwords — before ever
+ * consuming the token, so a policy-rejected attempt never burns it. It then
+ * atomically consumes the token — the same conditional-update pattern as
+ * `RefreshTokenService.consume` (`updateMany` on `used: false`, checking the
+ * affected count) rather than a plain read-then-write, so two concurrent
+ * requests presenting the same token can never both win. On success it sets
+ * the new password hash with `argon2`, pushes the old hash onto
+ * `previousPasswordHashes` (capped to `PASSWORD_HISTORY_COUNT`), and revokes
+ * every refresh token for the user (NFR1: a password change invalidates
+ * every existing session, not just this token).
  */
 @Injectable()
 export class PasswordResetService {
@@ -75,10 +86,14 @@ export class PasswordResetService {
   }
 
   /**
-   * Returns `true` on a successful reset, `false` for every rejection case
-   * (unknown/already-used/expired token, or an empty new password) — the
-   * controller maps every `false` to the same generic 401, never revealing
-   * which case occurred.
+   * Returns `true` on a successful reset, `false` for every token/credential
+   * rejection case (unknown/already-used/expired token, or an empty new
+   * password) — the controller maps every `false` to the same generic 401,
+   * never revealing which case occurred. A password-policy violation
+   * (spec-1-11) is a distinct case: it *throws* a `BadRequestException`
+   * (400) instead of returning `false`, and — because the check runs before
+   * the token is atomically consumed — never burns the token, so the same
+   * link can be retried with a compliant password.
    */
   async confirmReset(token: string, newPassword: string): Promise<boolean> {
     if (
@@ -104,6 +119,23 @@ export class PasswordResetService {
     if (resetToken.expiresAt.getTime() <= Date.now()) {
       return false;
     }
+
+    // Fetch the target Usuario and enforce the password policy (spec-1-11)
+    // before ever consuming the token: this is a *real* password
+    // replacement, so priorHashes is the current hash plus the capped
+    // history, and a policy-rejected attempt must never burn the token.
+    const usuario = await this.prisma.usuario.findUnique({
+      where: { id: resetToken.userId },
+    });
+
+    if (!usuario) {
+      return false;
+    }
+
+    await enforcePasswordPolicy(newPassword, [
+      usuario.passwordHash,
+      ...usuario.previousPasswordHashes,
+    ]);
 
     // Atomic conditional update, never a plain read-then-write: only the
     // request that actually flips `used` from false to true wins. The other
@@ -132,6 +164,14 @@ export class PasswordResetService {
       where: { id: resetToken.userId },
       data: {
         passwordHash,
+        // The old hash it's replacing joins the reuse-check history (FR11),
+        // prepended and capped to PASSWORD_HISTORY_COUNT — only a *real*
+        // password replacement pushes here (spec-1-11 Boundaries); activate
+        // never does, since it has no real prior password to protect.
+        previousPasswordHashes: [
+          usuario.passwordHash,
+          ...usuario.previousPasswordHashes,
+        ].slice(0, this.getHistoryCount()),
         // A successful reset is a stronger identity proof than a password,
         // so it also clears any active lockout (Story 1.4) — otherwise a
         // locked-out user who just reset their password still can't log in.
@@ -145,5 +185,12 @@ export class PasswordResetService {
     await this.refreshTokenService.revokeAllForUser(resetToken.userId);
 
     return true;
+  }
+
+  private getHistoryCount(): number {
+    const raw = Number(process.env.PASSWORD_HISTORY_COUNT);
+    return Number.isInteger(raw) && raw > 0
+      ? raw
+      : DEFAULT_PASSWORD_HISTORY_COUNT;
   }
 }

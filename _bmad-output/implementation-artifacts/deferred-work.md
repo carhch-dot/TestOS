@@ -81,3 +81,23 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-10-force-password-reset.md`
   summary: An authenticated Manager/Administrator can loop over every user id and fire a reset email at each of them via `POST /users/:id/force-reset-password`, with no throttle.
   evidence: Same systemic, app-wide no-rate-limiting gap already tracked from Story 1.4's review and extended to `forgot-password`/`reset-password` in Story 1.6 — this new endpoint inherits it, not a defect introduced by this story specifically.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-11-password-policy.md`
+  summary: The new `400` (password-policy violation) vs `401` (token/credential problem) split on `activate`/`confirmReset` is a binary oracle for "is this token currently valid," contradicting Story 1.6's frozen boundary that such cases "must all be indistinguishable to the caller."
+  evidence: Genuine tension between 1.6's boundary and 1.11's own AC, which explicitly requires an informative message naming the unmet policy requirement — the two can't both be fully satisfied. Practical exploitability is low: the oracle only has value to someone who already possesses a candidate 256-bit token, at which point submitting a *compliant* password achieves full account takeover directly, so the oracle adds no capability a valid-token holder doesn't already have. Revisit if either boundary is renegotiated.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-11-password-policy.md`
+  summary: A policy-rejected `activate`/`confirmReset` attempt never burns its token (by design, for retryability), so an attacker holding one valid token can force unlimited `argon2.verify` calls (up to `PASSWORD_HISTORY_COUNT + 1` per request) with no throttle.
+  evidence: Real new cost-multiplier, but extends the already-accepted systemic no-rate-limiting gap (Story 1.4/1.6/1.10 entries above) rather than introducing a new vulnerability class.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-11-password-policy.md`
+  summary: `requestReset` doesn't invalidate prior unused `PasswordResetToken` rows when issuing a new one (unchanged since Story 1.6), so two valid tokens for the same user confirmed concurrently can race past `confirmReset`'s non-atomic read-check-write sequence and corrupt `previousPasswordHashes`; `InviteService.activate` has a narrower analogous window between its status re-check and its final `usuario.update`.
+  evidence: Incremental worsening (history corruption, not just which password wins) of a pre-existing gap — no `$transaction` exists anywhere in this codebase (same class already logged repeatedly for spec-1-5/1-6/1-7/1-8/1-9).
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-11-password-policy.md`
+  summary: `PASSWORD_MIN_LENGTH`/`PASSWORD_HISTORY_COUNT` have no upper bound; a `PASSWORD_MIN_LENGTH` set at or above the controllers' hardcoded `MAX_PASSWORD_LENGTH = 1024` would make every password submission fail.
+  evidence: Self-inflicted operator misconfiguration, not reachable through normal use — matches this codebase's existing pattern of not upper-bounding configurable env vars (`LOGIN_LOCKOUT_*`, `INVITATION_TOKEN_TTL_DAYS` are equally unbounded).
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-11-password-policy.md`
+  summary: `PasswordResetService.confirmReset` never re-checks the target `Usuario.status === ACTIVE` before resetting a password.
+  evidence: Pre-existing since Story 1.6, not introduced by spec-1-11 (only surfaced during its review, which added the `Usuario` fetch for the policy check but didn't add or remove this check). Bounded impact: `confirmReset` never touches `status` itself, so a deactivated target stays unable to log in regardless — `LoginService` independently gates on `status === ACTIVE`.

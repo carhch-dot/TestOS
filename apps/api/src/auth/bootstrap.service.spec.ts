@@ -113,4 +113,18 @@ describe('BootstrapService', () => {
     );
     expect(prisma.usuario.create).not.toHaveBeenCalled();
   });
+
+  // spec-1-11 I/O matrix row 4: ADMIN_PASSWORD shorter than
+  // PASSWORD_MIN_LENGTH fails startup with a clear error and creates no
+  // admin — the same fail-fast posture as a missing env var.
+  it('exits with an error naming the length requirement when ADMIN_PASSWORD fails the password policy', async () => {
+    process.env.ADMIN_EMAIL = 'admin@example.com';
+    process.env.ADMIN_PASSWORD = 'short1';
+    prisma.usuario.count.mockResolvedValue(0);
+
+    await expect(service.onApplicationBootstrap()).rejects.toThrow(
+      /at least 8 characters/,
+    );
+    expect(prisma.usuario.create).not.toHaveBeenCalled();
+  });
 });

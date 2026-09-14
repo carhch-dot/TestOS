@@ -1,14 +1,18 @@
 import { Test } from '@nestjs/testing';
+import { BadRequestException } from '@nestjs/common';
 import { createHash } from 'crypto';
+import * as argon2 from 'argon2';
 import { PasswordResetService } from './password-reset.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { RefreshTokenService } from './refresh-token.service';
 import { MailService } from '../mail/mail.service';
+import { PASSWORD_REUSED_MESSAGE } from '../common/password-policy';
 
 type Usuario = {
   id: string;
   email: string;
   passwordHash: string;
+  previousPasswordHashes: string[];
   role: string;
   status: string;
 };
@@ -39,6 +43,8 @@ function hashOf(raw: string): string {
 }
 
 describe('PasswordResetService', () => {
+  const ORIGINAL_ENV = process.env;
+
   let prisma: PrismaMock;
   let refreshTokenService: {
     revokeAllForUser: jest.Mock<Promise<void>, [string]>;
@@ -48,11 +54,27 @@ describe('PasswordResetService', () => {
 
   const PASSWORD = 'a-new-password';
 
+  // A real, well-formed argon2 hash (not the literal string 'old-hash') —
+  // enforcePasswordPolicy's reuse check runs argon2.verify against it, and
+  // argon2 throws on a malformed hash rather than returning false.
+  let OLD_HASH: string;
+  let HASH_A: string;
+  let HASH_B: string;
+  let HASH_C: string;
+
+  beforeAll(async () => {
+    OLD_HASH = await argon2.hash('the-current-password');
+    HASH_A = await argon2.hash('history-password-a');
+    HASH_B = await argon2.hash('history-password-b');
+    HASH_C = await argon2.hash('history-password-c');
+  });
+
   function makeUsuario(overrides: Partial<Usuario> = {}): Usuario {
     return {
       id: 'user-1',
       email: 'user@example.com',
-      passwordHash: 'old-hash',
+      passwordHash: OLD_HASH,
+      previousPasswordHashes: [],
       role: 'READ_ONLY',
       status: 'ACTIVE',
       ...overrides,
@@ -74,6 +96,10 @@ describe('PasswordResetService', () => {
   }
 
   beforeEach(async () => {
+    process.env = { ...ORIGINAL_ENV };
+    delete process.env.PASSWORD_MIN_LENGTH;
+    delete process.env.PASSWORD_HISTORY_COUNT;
+
     prisma = {
       usuario: {
         findUnique: jest.fn<Promise<Usuario | null>, [unknown]>(),
@@ -108,6 +134,10 @@ describe('PasswordResetService', () => {
     }).compile();
 
     service = moduleRef.get(PasswordResetService);
+  });
+
+  afterEach(() => {
+    process.env = ORIGINAL_ENV;
   });
 
   describe('requestReset', () => {
@@ -187,6 +217,7 @@ describe('PasswordResetService', () => {
     it('resets the password, marks the token used, and revokes every refresh token', async () => {
       const resetToken = makeResetToken();
       prisma.passwordResetToken.findUnique.mockResolvedValue(resetToken);
+      prisma.usuario.findUnique.mockResolvedValue(makeUsuario());
       prisma.usuario.update.mockResolvedValue(makeUsuario());
 
       const result = await service.confirmReset('raw-token', PASSWORD);
@@ -194,6 +225,9 @@ describe('PasswordResetService', () => {
       expect(result).toBe(true);
       expect(prisma.passwordResetToken.findUnique).toHaveBeenCalledWith({
         where: { tokenHash: hashOf('raw-token') },
+      });
+      expect(prisma.usuario.findUnique).toHaveBeenCalledWith({
+        where: { id: resetToken.userId },
       });
       expect(prisma.passwordResetToken.updateMany).toHaveBeenCalledWith({
         where: { id: resetToken.id, used: false },
@@ -212,6 +246,7 @@ describe('PasswordResetService', () => {
         where: { id: string };
         data: {
           passwordHash: string;
+          previousPasswordHashes: string[];
           failedLoginAttempts: number;
           lockedUntil: null;
         };
@@ -219,6 +254,8 @@ describe('PasswordResetService', () => {
       expect(where).toEqual({ id: resetToken.userId });
       expect(typeof data.passwordHash).toBe('string');
       expect(data.passwordHash).not.toBe(PASSWORD);
+      // The old hash it's replacing joins the reuse-check history (FR11).
+      expect(data.previousPasswordHashes).toEqual([OLD_HASH]);
       // A successful reset also clears any active lockout (Story 1.4) — a
       // locked-out user who proves ownership via the emailed token can log
       // in immediately rather than waiting out the lockout timer.
@@ -228,6 +265,60 @@ describe('PasswordResetService', () => {
       expect(refreshTokenService.revokeAllForUser).toHaveBeenCalledWith(
         resetToken.userId,
       );
+    });
+
+    // spec-1-11: the pushed history is capped to PASSWORD_HISTORY_COUNT,
+    // prepending the old hash and dropping the oldest entry once full.
+    it('caps previousPasswordHashes to PASSWORD_HISTORY_COUNT, dropping the oldest', async () => {
+      const resetToken = makeResetToken();
+      const existingHistory = [HASH_A, HASH_B, HASH_C];
+      prisma.passwordResetToken.findUnique.mockResolvedValue(resetToken);
+      prisma.usuario.findUnique.mockResolvedValue(
+        makeUsuario({ previousPasswordHashes: existingHistory }),
+      );
+      prisma.usuario.update.mockResolvedValue(makeUsuario());
+
+      await service.confirmReset('raw-token', PASSWORD);
+
+      const { data } = prisma.usuario.update.mock.calls[0][0] as {
+        data: { previousPasswordHashes: string[] };
+      };
+      expect(data.previousPasswordHashes).toEqual([OLD_HASH, HASH_A, HASH_B]);
+    });
+
+    it('honors a custom PASSWORD_HISTORY_COUNT when capping previousPasswordHashes', async () => {
+      process.env.PASSWORD_HISTORY_COUNT = '1';
+      const resetToken = makeResetToken();
+      prisma.passwordResetToken.findUnique.mockResolvedValue(resetToken);
+      prisma.usuario.findUnique.mockResolvedValue(
+        makeUsuario({ previousPasswordHashes: [HASH_A, HASH_B] }),
+      );
+      prisma.usuario.update.mockResolvedValue(makeUsuario());
+
+      await service.confirmReset('raw-token', PASSWORD);
+
+      const { data } = prisma.usuario.update.mock.calls[0][0] as {
+        data: { previousPasswordHashes: string[] };
+      };
+      expect(data.previousPasswordHashes).toEqual([OLD_HASH]);
+    });
+
+    it('falls back to the default PASSWORD_HISTORY_COUNT (3) for a non-positive/non-numeric value', async () => {
+      process.env.PASSWORD_HISTORY_COUNT = 'not-a-number';
+      const resetToken = makeResetToken();
+      const existingHistory = [HASH_A, HASH_B, HASH_C];
+      prisma.passwordResetToken.findUnique.mockResolvedValue(resetToken);
+      prisma.usuario.findUnique.mockResolvedValue(
+        makeUsuario({ previousPasswordHashes: existingHistory }),
+      );
+      prisma.usuario.update.mockResolvedValue(makeUsuario());
+
+      await service.confirmReset('raw-token', PASSWORD);
+
+      const { data } = prisma.usuario.update.mock.calls[0][0] as {
+        data: { previousPasswordHashes: string[] };
+      };
+      expect(data.previousPasswordHashes).toEqual([OLD_HASH, HASH_A, HASH_B]);
     });
 
     // Scenario 4a: unknown token.
@@ -295,9 +386,12 @@ describe('PasswordResetService', () => {
     });
 
     // Scenario 5: two concurrent requests presenting the same valid token.
+    // Both pass the (non-atomic) usuario fetch and policy check; only the
+    // atomic consume actually decides the winner.
     it('rejects the loser of a concurrent race on the same token (lost the atomic consume)', async () => {
       const resetToken = makeResetToken();
       prisma.passwordResetToken.findUnique.mockResolvedValue(resetToken);
+      prisma.usuario.findUnique.mockResolvedValue(makeUsuario());
       // Simulates the second request's updateMany finding the row already
       // flipped to used:true by the winner, so the where clause matches zero
       // rows.
@@ -308,6 +402,95 @@ describe('PasswordResetService', () => {
       expect(result).toBe(false);
       expect(prisma.usuario.update).not.toHaveBeenCalled();
       expect(refreshTokenService.revokeAllForUser).not.toHaveBeenCalled();
+    });
+
+    // spec-1-11 I/O matrix row 1: password shorter than PASSWORD_MIN_LENGTH.
+    // The token must remain unused so the same link can be retried.
+    it('rejects a too-short password with a BadRequestException, without consuming the token', async () => {
+      const resetToken = makeResetToken();
+      prisma.passwordResetToken.findUnique.mockResolvedValue(resetToken);
+      prisma.usuario.findUnique.mockResolvedValue(makeUsuario());
+
+      await expect(
+        service.confirmReset('raw-token', 'short1'),
+      ).rejects.toThrow(BadRequestException);
+      await expect(
+        service.confirmReset('raw-token', 'short1'),
+      ).rejects.toThrow(/at least 8 characters/);
+
+      expect(prisma.passwordResetToken.updateMany).not.toHaveBeenCalled();
+      expect(prisma.usuario.update).not.toHaveBeenCalled();
+      expect(refreshTokenService.revokeAllForUser).not.toHaveBeenCalled();
+    });
+
+    // spec-1-11 I/O matrix row 2: new password matches the current password.
+    it('rejects a new password matching the current password, without consuming the token', async () => {
+      const resetToken = makeResetToken();
+      prisma.passwordResetToken.findUnique.mockResolvedValue(resetToken);
+      prisma.usuario.findUnique.mockResolvedValue(makeUsuario());
+
+      await expect(
+        service.confirmReset('raw-token', 'the-current-password'),
+      ).rejects.toThrow(PASSWORD_REUSED_MESSAGE);
+
+      expect(prisma.passwordResetToken.updateMany).not.toHaveBeenCalled();
+      expect(prisma.usuario.update).not.toHaveBeenCalled();
+      expect(refreshTokenService.revokeAllForUser).not.toHaveBeenCalled();
+    });
+
+    // spec-1-11 I/O matrix row 2: new password matches one of the last N
+    // (not just the current) passwords.
+    it('rejects a new password matching one of the last N previous passwords, without consuming the token', async () => {
+      const resetToken = makeResetToken();
+      prisma.passwordResetToken.findUnique.mockResolvedValue(resetToken);
+      prisma.usuario.findUnique.mockResolvedValue(
+        makeUsuario({ previousPasswordHashes: [HASH_A, HASH_B, HASH_C] }),
+      );
+
+      await expect(
+        service.confirmReset('raw-token', 'history-password-b'),
+      ).rejects.toThrow(PASSWORD_REUSED_MESSAGE);
+
+      expect(prisma.passwordResetToken.updateMany).not.toHaveBeenCalled();
+      expect(prisma.usuario.update).not.toHaveBeenCalled();
+    });
+
+    // spec-1-11 AC 3: a policy-rejected attempt against a still-valid token
+    // never consumes it — the same token can then succeed with a compliant
+    // password.
+    it('lets the same token succeed on retry after an earlier policy-rejected attempt', async () => {
+      const resetToken = makeResetToken();
+      prisma.passwordResetToken.findUnique.mockResolvedValue(resetToken);
+      prisma.usuario.findUnique.mockResolvedValue(makeUsuario());
+
+      await expect(
+        service.confirmReset('raw-token', 'short1'),
+      ).rejects.toThrow(BadRequestException);
+      expect(prisma.passwordResetToken.updateMany).not.toHaveBeenCalled();
+
+      prisma.usuario.update.mockResolvedValue(makeUsuario());
+
+      const result = await service.confirmReset('raw-token', PASSWORD);
+
+      expect(result).toBe(true);
+      expect(prisma.passwordResetToken.updateMany).toHaveBeenCalledWith({
+        where: { id: resetToken.id, used: false },
+        data: { used: true },
+      });
+    });
+
+    // Defensive edge case: the Usuario referenced by a valid reset token no
+    // longer exists.
+    it('rejects when the target Usuario cannot be found, without consuming the token', async () => {
+      const resetToken = makeResetToken();
+      prisma.passwordResetToken.findUnique.mockResolvedValue(resetToken);
+      prisma.usuario.findUnique.mockResolvedValue(null);
+
+      const result = await service.confirmReset('raw-token', PASSWORD);
+
+      expect(result).toBe(false);
+      expect(prisma.passwordResetToken.updateMany).not.toHaveBeenCalled();
+      expect(prisma.usuario.update).not.toHaveBeenCalled();
     });
   });
 });

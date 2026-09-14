@@ -1,5 +1,5 @@
 import { Test } from '@nestjs/testing';
-import { ConflictException } from '@nestjs/common';
+import { BadRequestException, ConflictException } from '@nestjs/common';
 import { createHash } from 'crypto';
 import * as argon2 from 'argon2';
 import { Prisma } from '@prisma/client';
@@ -51,11 +51,21 @@ describe('InviteService', () => {
 
   const PASSWORD = 'a-new-password';
 
+  // A real, well-formed argon2 hash (not the literal string
+  // 'placeholder-hash') — enforcePasswordPolicy's reuse check now runs
+  // argon2.verify against every Usuario returned by the mock, and argon2
+  // throws on a malformed hash rather than returning false.
+  let PLACEHOLDER_HASH: string;
+
+  beforeAll(async () => {
+    PLACEHOLDER_HASH = await argon2.hash('unguessable-placeholder-value');
+  });
+
   function makeUsuario(overrides: Partial<Usuario> = {}): Usuario {
     return {
       id: 'user-1',
       email: 'invitee@example.com',
-      passwordHash: 'placeholder-hash',
+      passwordHash: PLACEHOLDER_HASH,
       role: 'EDITOR',
       status: 'PENDING_VERIFICATION',
       ...overrides,
@@ -356,10 +366,14 @@ describe('InviteService', () => {
     });
 
     // Scenario 6: two concurrent requests presenting the same valid token —
-    // exactly one succeeds.
+    // exactly one succeeds. Both pass the (non-atomic) status re-check and
+    // policy check; only the atomic consume actually decides the winner.
     it('rejects the loser of a concurrent race on the same token (lost the atomic consume)', async () => {
       const invitationToken = makeInvitationToken();
       prisma.invitationToken.findUnique.mockResolvedValue(invitationToken);
+      prisma.usuario.findUnique.mockResolvedValue(
+        makeUsuario({ status: 'PENDING_VERIFICATION' }),
+      );
       prisma.invitationToken.updateMany.mockResolvedValueOnce({ count: 0 });
 
       const result = await service.activate('raw-token', PASSWORD);
@@ -371,8 +385,9 @@ describe('InviteService', () => {
     // Scenario 8: a stale-but-still-valid InvitationToken presented against a
     // Usuario that is no longer PENDING_VERIFICATION (e.g. already ACTIVE)
     // must be rejected the same generic way, never resetting that user's
-    // password with no re-authentication.
-    it('rejects a valid token whose target Usuario is no longer PENDING_VERIFICATION', async () => {
+    // password with no re-authentication. The status re-check now runs
+    // before the atomic consume, so the token is never marked used either.
+    it('rejects a valid token whose target Usuario is no longer PENDING_VERIFICATION, without consuming the token', async () => {
       const invitationToken = makeInvitationToken();
       prisma.invitationToken.findUnique.mockResolvedValue(invitationToken);
       prisma.usuario.findUnique.mockResolvedValue(
@@ -382,7 +397,73 @@ describe('InviteService', () => {
       const result = await service.activate('raw-token', PASSWORD);
 
       expect(result).toBe(false);
+      expect(prisma.invitationToken.updateMany).not.toHaveBeenCalled();
       expect(prisma.usuario.update).not.toHaveBeenCalled();
+    });
+
+    // spec-1-11 I/O matrix row 1: password shorter than PASSWORD_MIN_LENGTH.
+    // The token must remain unused so the same link can be retried.
+    it('rejects a too-short password with a BadRequestException, without consuming the token', async () => {
+      const invitationToken = makeInvitationToken();
+      prisma.invitationToken.findUnique.mockResolvedValue(invitationToken);
+      prisma.usuario.findUnique.mockResolvedValue(
+        makeUsuario({ status: 'PENDING_VERIFICATION' }),
+      );
+
+      await expect(service.activate('raw-token', 'short1')).rejects.toThrow(
+        BadRequestException,
+      );
+      await expect(service.activate('raw-token', 'short1')).rejects.toThrow(
+        /at least 8 characters/,
+      );
+
+      expect(prisma.invitationToken.updateMany).not.toHaveBeenCalled();
+      expect(prisma.usuario.update).not.toHaveBeenCalled();
+    });
+
+    // spec-1-11 AC 3: a policy-rejected attempt against a still-valid token
+    // never consumes it — the same token can then succeed with a compliant
+    // password.
+    it('lets the same token succeed on retry after an earlier policy-rejected attempt', async () => {
+      const invitationToken = makeInvitationToken();
+      prisma.invitationToken.findUnique.mockResolvedValue(invitationToken);
+      prisma.usuario.findUnique.mockResolvedValue(
+        makeUsuario({ status: 'PENDING_VERIFICATION' }),
+      );
+
+      await expect(service.activate('raw-token', 'short1')).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(prisma.invitationToken.updateMany).not.toHaveBeenCalled();
+
+      prisma.usuario.update.mockResolvedValue(
+        makeUsuario({ status: 'ACTIVE' }),
+      );
+
+      const result = await service.activate('raw-token', PASSWORD);
+
+      expect(result).toBe(true);
+      expect(prisma.invitationToken.updateMany).toHaveBeenCalledWith({
+        where: { id: invitationToken.id, used: false },
+        data: { used: true },
+      });
+    });
+
+    // Reuse check runs too (against the unguessable placeholder hash) — in
+    // practice never matches a real password, but the policy call is
+    // unconditional per spec-1-11 Code Map.
+    it('does not reject a normal password merely because a reuse check also runs against the placeholder hash', async () => {
+      const invitationToken = makeInvitationToken();
+      prisma.invitationToken.findUnique.mockResolvedValue(invitationToken);
+      const usuario = makeUsuario({ status: 'PENDING_VERIFICATION' });
+      prisma.usuario.findUnique.mockResolvedValue(usuario);
+      prisma.usuario.update.mockResolvedValue(
+        makeUsuario({ status: 'ACTIVE' }),
+      );
+
+      const result = await service.activate('raw-token', PASSWORD);
+
+      expect(result).toBe(true);
     });
   });
 });

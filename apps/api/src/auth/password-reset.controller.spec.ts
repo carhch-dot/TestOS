@@ -1,5 +1,5 @@
 import { Test } from '@nestjs/testing';
-import { UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, UnauthorizedException } from '@nestjs/common';
 import {
   PasswordResetController,
   FORGOT_PASSWORD_MESSAGE,
@@ -117,6 +117,20 @@ describe('PasswordResetController', () => {
           newPassword: 'new-password',
         }),
       ).rejects.toThrow(RESET_PASSWORD_FAILED_MESSAGE);
+    });
+
+    // spec-1-11: a password-policy violation is a distinct case — the
+    // service throws BadRequestException instead of returning false, and
+    // that must reach the caller as a 400 with its specific message, not be
+    // swallowed into the generic 401 above.
+    it('propagates a BadRequestException raised by the service (password-policy violation) unchanged', async () => {
+      passwordResetService.confirmReset.mockRejectedValue(
+        new BadRequestException('Password must be at least 8 characters long.'),
+      );
+
+      await expect(
+        controller.resetPassword({ token: 'raw-token', newPassword: 'short1' }),
+      ).rejects.toThrow(BadRequestException);
     });
 
     it('rejects with the generic message when token is missing, never calling the service', async () => {

@@ -282,6 +282,20 @@ describe('InviteController', () => {
       ).rejects.toThrow(ACTIVATE_FAILED_MESSAGE);
     });
 
+    // spec-1-11: a password-policy violation is a distinct case — the
+    // service throws BadRequestException instead of returning false, and
+    // that must reach the caller as a 400 with its specific message, not be
+    // swallowed into the generic 401 above.
+    it('propagates a BadRequestException raised by the service (password-policy violation) unchanged', async () => {
+      inviteService.activate.mockRejectedValue(
+        new BadRequestException('Password must be at least 8 characters long.'),
+      );
+
+      await expect(
+        controller.activate({ token: 'raw-token', password: 'short1' }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
     it('rejects with the generic message when token is missing, never calling the service', async () => {
       await expect(
         controller.activate({
