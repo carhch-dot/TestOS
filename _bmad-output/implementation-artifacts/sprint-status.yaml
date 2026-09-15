@@ -1,0 +1,85 @@
+# STATUS DEFINITIONS:
+# ==================
+# Epic Status:
+#   - backlog: Epic not yet started
+#   - in-progress: Epic actively being worked on
+#   - done: All stories in epic completed
+
+# Story Status:
+#   - backlog: Story only exists in epic file
+#   - ready-for-dev: Story file created, ready for development
+#   - in-progress: Developer actively working on implementation
+#   - review: Implementation complete, ready for review
+#   - done: Story completed
+
+# Retrospective Status:
+#   - optional: Can be completed but not required
+#   - done: Retrospective has been completed
+
+# Action Item Status:
+#   - open: Committed during a retrospective, not yet addressed
+#   - in-progress: Actively being worked on
+#   - done: Completed
+
+# WORKFLOW NOTES:
+# ===============
+# - Epic transitions to 'in-progress' automatically when its first story starts (via build's sprint sync)
+# - Stories can be worked in parallel if team capacity allows
+# - Developer typically creates the next story after the previous one is 'done' to incorporate learnings
+# - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
+# - Retrospective appends its action items to action_items; the status view surfaces open ones
+generated: 09-11-2026 16:21
+last_updated: 09-15-2026 16:15
+project: TestOS
+project_key: NOKEY
+tracking_system: file-system
+story_location: _bmad-output/implementation-artifacts
+development_status:
+  epic-1: in-progress
+  1-1-arranque-del-sistema-y-primer-administrador: review
+  1-2-login-con-email-y-contraseña: review
+  1-3-cerrar-sesión: review
+  1-4-bloqueo-temporal-por-intentos-fallidos: review
+  1-5-renovación-transparente-de-sesión: review
+  1-6-recuperación-de-contraseña: review
+  1-7-invitar-usuarios-y-activar-la-cuenta: review
+  1-8-listar-desactivar-y-reactivar-usuarios: review
+  1-9-cambiar-rol-de-usuario: review
+  1-10-forzar-reseteo-de-contraseña-de-otro-usuario: review
+  1-11-política-de-contraseña: review
+  epic-1-retrospective: optional
+
+  epic-2: in-progress
+  2-1-registro-automático-e-inmutable-de-cada-acción: review
+  2-2-consultar-y-filtrar-el-historial-de-auditoría: review
+  epic-2-retrospective: optional
+
+  epic-3: in-progress
+  3-1-crear-un-ítem-de-configuración: review
+  3-2-buscar-filtrar-y-listar-ítems: review
+  3-3-modificar-un-ítem-existente: review
+  3-4-eliminar-un-ítem: review
+  epic-3-retrospective: optional
+
+  epic-4: in-progress
+  4-1-crear-una-relación-entre-dos-ítems: review
+  4-2-editar-y-eliminar-relaciones: review
+  4-3-ver-el-árbol-de-topología-desde-un-ítem: review
+  4-4-buscar-ítems-dentro-de-la-vista-de-topología: backlog
+  epic-4-retrospective: optional
+
+  epic-5: backlog
+  5-1-crear-una-solicitud-de-cambio-sobre-un-ítem: backlog
+  5-2-transicionar-el-estado-de-una-solicitud-de-cambio: backlog
+  5-3-dar-de-baja-una-solicitud-de-cambio: backlog
+  epic-5-retrospective: optional
+
+  epic-6: backlog
+  6-1-exportar-el-inventario-a-hoja-de-cálculo: backlog
+  6-2-exportar-el-inventario-a-pdf: backlog
+  epic-6-retrospective: optional
+
+  epic-7: backlog
+  7-1-subir-y-validar-un-archivo-de-importación: backlog
+  7-2-confirmar-y-ejecutar-el-reemplazo-completo-del-inventario: backlog
+  epic-7-retrospective: optional

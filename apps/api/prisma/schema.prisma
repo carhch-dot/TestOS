@@ -1,0 +1,210 @@
+// Prisma schema for TestOS API.
+// AuthModule is the only module that writes Usuario (AD-1).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UsuarioRole {
+  ADMINISTRATOR
+  MANAGER
+  EDITOR
+  READ_ONLY
+}
+
+enum UsuarioStatus {
+  ACTIVE
+  PENDING_VERIFICATION
+  DEACTIVATED
+}
+
+model Usuario {
+  id                     String               @id @default(uuid())
+  email                  String               @unique
+  passwordHash           String
+  role                   UsuarioRole
+  status                 UsuarioStatus        @default(ACTIVE)
+  // Lockout after failed attempts (FR2): a running counter + a lock-until
+  // timestamp, no separate attempt-history table (see spec Boundaries).
+  failedLoginAttempts    Int                  @default(0)
+  lockedUntil            DateTime?
+  // Capped history of prior real password hashes, most-recent first (FR11 /
+  // spec-1-11): pushed onto only when `PasswordResetService.confirmReset`
+  // replaces a real password, sliced to `PASSWORD_HISTORY_COUNT`. Not a
+  // separate table (see spec-1-11 Design Notes) — small, bounded, no
+  // independent lifecycle.
+  previousPasswordHashes String[]             @default([])
+  createdAt              DateTime             @default(now())
+  refreshTokens          RefreshToken[]
+  passwordResetTokens    PasswordResetToken[]
+  invitationTokens       InvitationToken[]
+  registrosAuditoria     RegistroAuditoria[]
+}
+
+// Persists only the SHA-256 hash of each issued refresh token (AD-5); the raw
+// value is returned to the client once at issuance and never stored.
+model RefreshToken {
+  id        String   @id @default(uuid())
+  userId    String
+  usuario   Usuario  @relation(fields: [userId], references: [id])
+  tokenHash String   @unique
+  expiresAt DateTime
+  revoked   Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+// Persists only the SHA-256 hash of each issued password-reset token (same
+// posture as RefreshToken above); the raw value is emailed to the user once
+// and never stored. A row is created only for a real ACTIVE-user match
+// (spec-1-6) — `forgot-password` never creates one for an unknown email or a
+// non-ACTIVE account.
+model PasswordResetToken {
+  id        String   @id @default(uuid())
+  userId    String
+  usuario   Usuario  @relation(fields: [userId], references: [id])
+  tokenHash String   @unique
+  expiresAt DateTime
+  used      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+// Persists only the SHA-256 hash of each issued invitation/activation token
+// (same shape and posture as PasswordResetToken above); the raw value is
+// emailed once and never stored. Created on invite, and re-created (with the
+// prior unused row invalidated) when a still-PENDING_VERIFICATION user is
+// re-invited (spec-1-7) — no duplicate Usuario row on resend.
+model InvitationToken {
+  id        String   @id @default(uuid())
+  userId    String
+  usuario   Usuario  @relation(fields: [userId], references: [id])
+  tokenHash String   @unique
+  expiresAt DateTime
+  used      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+enum TipoAccion {
+  CREATE
+  UPDATE
+  DELETE
+}
+
+// Append-only audit trail (spec-2-1, FR-27–FR-30): the sole write path is
+// `AuditService.record(tx, params)`, always inside the caller's own
+// transaction — no controller, no HTTP endpoint, no trigger/constraint
+// enforces immutability here, same posture as RefreshToken/
+// PasswordResetToken/InvitationToken above (enforced by there being no code
+// path that ever updates or deletes a row).
+//
+// `entidad`/`entidadId` are plain strings, not enums/FKs: this table spans
+// many different entity tables from future epics (ItemConfiguracion,
+// Relacion, SolicitudCambio, ...), none of which exist yet, so a single
+// typed relation is impossible and a new entity type never requires a
+// migration to this module (mirrors AD-8's JSONB rationale). `usuarioId` is
+// the one real FK — always a real acting user, never nullable; there is no
+// "system actor" case in this story's scope. It defaults to `ON DELETE
+// RESTRICT` (Prisma's default for a required relation): once a Usuario has
+// performed any audited action, that row can never be hard-deleted. Currently
+// unreachable (no delete-user feature exists anywhere in this codebase, only
+// deactivate/reactivate) but a real, permanent consequence to know about if
+// one is ever built.
+model RegistroAuditoria {
+  id         String     @id @default(uuid())
+  usuarioId  String
+  usuario    Usuario    @relation(fields: [usuarioId], references: [id])
+  tipoAccion TipoAccion
+  entidad    String
+  entidadId  String
+  // Caller-shaped JSON; AuditService enforces only this outer envelope, not
+  // any before/after structure inside it (matches AD-3's "no module invents
+  // its own reporting shape" concern, which is about the envelope, not its
+  // payload contents).
+  cambios    Json
+  fecha      DateTime   @default(now())
+
+  @@index([usuarioId])
+  // Composite, not a standalone `entidad` index: Postgres can use this
+  // index's leading column alone for entidad-only queries too (leftmost
+  // prefix rule), and "history of this one entity" (entidad + entidadId
+  // together) is the primary lookup FR-28/the epic's stated goal imply.
+  @@index([entidad, entidadId])
+  @@index([fecha])
+}
+
+// The inventory's sole record type for this story (spec-3-1, FR-12): owned
+// exclusively by `InventoryModule` (AD-1) — no other module writes it
+// directly via Prisma. `tipo` is a plain `String`, not a Prisma enum,
+// validated at the service layer against the static catalog in
+// `item-type-catalog.ts` — the same reasoning as `RegistroAuditoria.entidad`
+// (a new type is a catalog-array edit, never a migration, per FR-13).
+// `properties` is `Json`, intentionally unvalidated against any per-type
+// shape (AD-8) — the brief's documented, accepted limitation for this
+// version.
+//
+// `nombre` carries a real (case-sensitive) `@unique` DB constraint as a
+// race-condition backstop only; the actual uniqueness rule is
+// case-insensitive (NFR3) and enforced by `InventoryService.create`'s
+// case-insensitive `findFirst` check before create, mirroring
+// `InviteService.invite`'s email-conflict `P2002`-catch pattern.
+model ItemConfiguracion {
+  id                 String   @id @default(uuid())
+  nombre             String   @unique
+  descripcion        String?
+  dominioPropietario String?
+  direccionRed       String?
+  tipo               String
+  properties         Json     @default("{}")
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  // Story 3.2 (search/filter/list) filters by tipo — indexed from the start
+  // rather than as a predictable follow-up migration (the pattern Story 1.5
+  // had to retrofit after review).
+  @@index([tipo])
+  relacionesOrigen  Relacion[] @relation("RelacionOrigen")
+  relacionesDestino Relacion[] @relation("RelacionDestino")
+}
+
+// A directed, typed link between two `ItemConfiguracion` rows (spec-4-1,
+// FR-18): "server hosts service", "service depends on database", etc. Owned
+// exclusively by `RelationsModule` (AD-1) — no other module ever writes it
+// directly via Prisma. `tipo` is a plain `String`, not a Prisma enum, same
+// catalog-array rationale as `ItemConfiguracion.tipo` (AD-8) — validated at
+// the service layer against `RELATION_TYPE_CATALOG`.
+//
+// `origenId`/`destinoId` use Prisma's default `onDelete: Restrict`: a
+// hard-deleting `DELETE /items/:id` on an item that still has any
+// relationship must fail cleanly (`InventoryService.remove` catches the
+// resulting P2003) rather than silently cascading, which would delete
+// `Relacion` rows with no `RegistroAuditoria` entry for them — the same
+// precedent as `RegistroAuditoria.usuarioId -> Usuario`.
+//
+// The unique constraint on `(origenId, destinoId, tipo)` is the exact
+// natural key FR-19 defines a duplicate by, and also backstops
+// `RelationsService.create`'s up-front `findFirst` duplicate check against a
+// concurrent race, mirroring `ItemConfiguracion.nombre`'s pattern.
+model Relacion {
+  id          String   @id @default(uuid())
+  origenId    String
+  origen      ItemConfiguracion @relation("RelacionOrigen", fields: [origenId], references: [id])
+  destinoId   String
+  destino     ItemConfiguracion @relation("RelacionDestino", fields: [destinoId], references: [id])
+  tipo        String
+  descripcion String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([origenId, destinoId, tipo])
+  @@index([origenId])
+  @@index([destinoId])
+}
