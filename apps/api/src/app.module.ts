@@ -8,6 +8,7 @@ import { HealthModule } from './health/health.module';
 import { InventoryModule } from './inventory/inventory.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { RelationsModule } from './relations/relations.module';
+import { TopologyModule } from './topology/topology.module';
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { RelationsModule } from './relations/relations.module';
     HealthModule,
     InventoryModule,
     RelationsModule,
+    TopologyModule,
   ],
   controllers: [AppController],
   providers: [AppService],
