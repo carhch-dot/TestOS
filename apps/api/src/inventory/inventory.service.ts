@@ -29,6 +29,27 @@ export const NAME_ALREADY_EXISTS_MESSAGE =
   'An item with that name already exists.';
 
 /**
+ * Optional AND-combined filters for `list` (spec-3-2 Boundaries). Both are
+ * caller-supplied via `InventoryController`, which has already turned an
+ * empty-string query param into `undefined` before this service ever sees
+ * it — `list` trusts its caller's shape rather than re-validating. Unlike
+ * `create`'s `tipo`, this `tipo` is deliberately NOT checked against
+ * `ITEM_TYPE_CATALOG` — an unrecognized filter value is a legitimate,
+ * harmless empty-result query on a read, not an error.
+ */
+export type InventoryListFilters = {
+  tipo?: string;
+  texto?: string;
+};
+
+export type InventoryListResult = {
+  data: ItemConfiguracion[];
+  total: number;
+  page: number;
+  pageSize: number;
+};
+
+/**
  * `InventoryModule`'s sole write path onto `ItemConfiguracion` (spec-3-1,
  * FR-12) — the module is its exclusive owner (AD-1); no other module ever
  * writes it directly via Prisma.
@@ -119,5 +140,43 @@ export class InventoryService {
 
       return item;
     });
+  }
+
+  /**
+   * Paginated, `nombre asc` listing of `ItemConfiguracion` (spec-3-2,
+   * FR-15), with `tipo` (exact match) and `texto` (case-insensitive
+   * substring across `nombre` OR `descripcion`) AND-combined into a single
+   * `where` clause — omitting a filter's key entirely (rather than passing
+   * `undefined` through) is what makes "no filter supplied" behave as
+   * "match everything" under Prisma, mirroring `AuditService.list`
+   * (spec-2-2). No sort options beyond this fixed default (spec
+   * Boundaries).
+   */
+  async list(
+    filters: InventoryListFilters,
+    page: number,
+    pageSize: number,
+  ): Promise<InventoryListResult> {
+    const where: Prisma.ItemConfiguracionWhereInput = {
+      ...(filters.tipo !== undefined && { tipo: filters.tipo }),
+      ...(filters.texto !== undefined && {
+        OR: [
+          { nombre: { contains: filters.texto, mode: 'insensitive' } },
+          { descripcion: { contains: filters.texto, mode: 'insensitive' } },
+        ],
+      }),
+    };
+
+    const [data, total] = await Promise.all([
+      this.prisma.itemConfiguracion.findMany({
+        where,
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+        orderBy: { nombre: 'asc' },
+      }),
+      this.prisma.itemConfiguracion.count({ where }),
+    ]);
+
+    return { data, total, page, pageSize };
   }
 }

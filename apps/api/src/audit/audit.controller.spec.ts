@@ -161,6 +161,26 @@ describe('AuditController', () => {
       },
     );
 
+    it.each(['usuarioId', 'entidad', 'entidadId'] as const)(
+      'rejects a repeated %s query key (parsed as an array) with a 400, never calling the service',
+      async (field) => {
+        const args: Array<string | string[] | undefined> = [
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+        ];
+        const index = { usuarioId: 2, entidad: 3, entidadId: 4 }[field];
+        args[index] = ['a', 'b'];
+
+        await expect(
+          controller.list(...(args as Parameters<typeof controller.list>)),
+        ).rejects.toThrow(BadRequestException);
+        expect(auditService.list).not.toHaveBeenCalled();
+      },
+    );
+
     it('parses a valid tipoAccion filter into the TipoAccion enum value', async () => {
       await controller.list(
         undefined,

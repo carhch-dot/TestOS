@@ -30,7 +30,11 @@ const CREATED_ITEM: ItemRow = {
 
 describe('InventoryService', () => {
   let prisma: {
-    itemConfiguracion: { findFirst: jest.Mock };
+    itemConfiguracion: {
+      findFirst: jest.Mock;
+      findMany: jest.Mock;
+      count: jest.Mock;
+    };
     $transaction: jest.Mock;
   };
   let tx: {
@@ -53,6 +57,8 @@ describe('InventoryService', () => {
     prisma = {
       itemConfiguracion: {
         findFirst: jest.fn().mockResolvedValue(null),
+        findMany: jest.fn().mockResolvedValue([]),
+        count: jest.fn().mockResolvedValue(0),
       },
       // Mirrors the real `$transaction(callback)` shape: invoke the
       // callback with a transaction client (`tx`) and return/propagate
@@ -239,5 +245,143 @@ describe('InventoryService', () => {
     await expect(
       service.create('user-1', { nombre: 'core-db', tipo: 'DATABASE' }),
     ).rejects.not.toThrow(NAME_ALREADY_EXISTS_MESSAGE);
+  });
+
+  // spec-3-2: `list(filters, page, pageSize)` — the sole additional read
+  // path onto `ItemConfiguracion` (create's own uniqueness `findFirst` is
+  // unrelated). Every test below asserts on the exact `where` object passed
+  // to both `findMany` and `count` (they must always match, or `total`
+  // would drift from the filtered page) plus ordering/pagination.
+  describe('list', () => {
+    const ROW: ItemRow = { ...CREATED_ITEM };
+
+    beforeEach(() => {
+      prisma.itemConfiguracion.findMany.mockResolvedValue([ROW]);
+      prisma.itemConfiguracion.count.mockResolvedValue(1);
+    });
+
+    // I/O matrix row 1: unfiltered query, ordered nombre asc, paginated.
+    it('returns entries ordered nombre asc, when no filters are supplied', async () => {
+      const result = await service.list({}, 1, 20);
+
+      expect(prisma.itemConfiguracion.findMany).toHaveBeenCalledWith({
+        where: {},
+        skip: 0,
+        take: 20,
+        orderBy: { nombre: 'asc' },
+      });
+      expect(prisma.itemConfiguracion.count).toHaveBeenCalledWith({
+        where: {},
+      });
+      expect(result).toEqual({ data: [ROW], total: 1, page: 1, pageSize: 20 });
+    });
+
+    it('computes skip from page/pageSize', async () => {
+      await service.list({}, 3, 10);
+
+      expect(prisma.itemConfiguracion.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ skip: 20, take: 10 }),
+      );
+    });
+
+    // I/O matrix row 2: tipo filter -> exact match, not validated against
+    // the catalog (unrecognized tipo is a legitimate empty-result query).
+    it('filters by tipo alone (exact match)', async () => {
+      await service.list({ tipo: 'DATABASE' }, 1, 20);
+
+      expect(prisma.itemConfiguracion.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { tipo: 'DATABASE' } }),
+      );
+      expect(prisma.itemConfiguracion.count).toHaveBeenCalledWith({
+        where: { tipo: 'DATABASE' },
+      });
+    });
+
+    it('does not validate tipo against the catalog (an unrecognized tipo is just a filter)', async () => {
+      prisma.itemConfiguracion.findMany.mockResolvedValue([]);
+      prisma.itemConfiguracion.count.mockResolvedValue(0);
+
+      const result = await service.list({ tipo: 'NOT_A_TYPE' }, 1, 20);
+
+      expect(result.data).toEqual([]);
+      expect(prisma.itemConfiguracion.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { tipo: 'NOT_A_TYPE' } }),
+      );
+    });
+
+    // I/O matrix row 3: texto filter -> case-insensitive substring across
+    // nombre OR descripcion.
+    it('filters by texto alone (case-insensitive substring across nombre OR descripcion)', async () => {
+      await service.list({ texto: 'core' }, 1, 20);
+
+      expect(prisma.itemConfiguracion.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            OR: [
+              { nombre: { contains: 'core', mode: 'insensitive' } },
+              { descripcion: { contains: 'core', mode: 'insensitive' } },
+            ],
+          },
+        }),
+      );
+      expect(prisma.itemConfiguracion.count).toHaveBeenCalledWith({
+        where: {
+          OR: [
+            { nombre: { contains: 'core', mode: 'insensitive' } },
+            { descripcion: { contains: 'core', mode: 'insensitive' } },
+          ],
+        },
+      });
+    });
+
+    // I/O matrix row 4: tipo and texto AND-combined when both are supplied.
+    it('AND-combines tipo and texto when both are supplied', async () => {
+      await service.list({ tipo: 'DATABASE', texto: 'core' }, 1, 20);
+
+      expect(prisma.itemConfiguracion.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            tipo: 'DATABASE',
+            OR: [
+              { nombre: { contains: 'core', mode: 'insensitive' } },
+              { descripcion: { contains: 'core', mode: 'insensitive' } },
+            ],
+          },
+        }),
+      );
+    });
+
+    it('orders by nombre asc with no other sort option', async () => {
+      await service.list({}, 1, 20);
+
+      expect(prisma.itemConfiguracion.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ orderBy: { nombre: 'asc' } }),
+      );
+    });
+
+    // Story 3.2's third AC: "the real total" must reflect the full filtered
+    // count, not just how many rows landed on this one page — the two
+    // numbers must be independent even when a filter narrows both queries.
+    it('reports the full filtered total even when the current page has fewer rows', async () => {
+      prisma.itemConfiguracion.findMany.mockResolvedValue([ROW]);
+      prisma.itemConfiguracion.count.mockResolvedValue(47);
+
+      const result = await service.list({ tipo: 'DATABASE' }, 2, 20);
+
+      expect(result.data).toHaveLength(1);
+      expect(result.total).toBe(47);
+      expect(result.page).toBe(2);
+      expect(result.pageSize).toBe(20);
+      expect(prisma.itemConfiguracion.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { tipo: 'DATABASE' },
+          skip: 20,
+          take: 20,
+        }),
+      );
+      expect(prisma.itemConfiguracion.count).toHaveBeenCalledWith({
+        where: { tipo: 'DATABASE' },
+      });
+    });
   });
 });

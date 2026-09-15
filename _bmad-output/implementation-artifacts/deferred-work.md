@@ -119,5 +119,17 @@
   evidence: Speculative — no real `record()` caller exists yet (spec-2-1). Worth a conscious check by whoever builds the first real caller (Inventory/Relations/Change Requests/Import) on what's appropriate to put in `cambios`, given it's readable by Editor/Read-only too.
 
 - source_spec: `_bmad-output/implementation-artifacts/spec-2-2-query-audit-history.md`
-  summary: `GET /audit` doesn't guard against duplicate query keys (e.g. `?usuarioId=a&usuarioId=b`), which NestJS's `@Query()` parses into a string array — Prisma would receive an unexpected type and likely surface an unhandled `500` instead of a clean `400`.
-  evidence: Narrow (requires a client deliberately or accidentally sending duplicate keys) and no existing controller anywhere in this codebase guards against this class of input either — would be a new validation pattern, not a one-line fix. Worth addressing codebase-wide (e.g. a shared query-parsing helper) rather than one-off here.
+  summary: RESOLVED by spec-3-2's review — `AuditController.list`'s `usuarioId`/`entidad`/`entidadId` now reject a repeated query key (parsed as an array) with a clean `400` via a shared `parseOptionalStringFilter` helper, fixed alongside the identical bug found in the new `InventoryController.list`.
+  evidence: n/a — fixed, not deferred.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-2-search-list-items.md`
+  summary: `GET /items`'s `texto` filter (`contains`/`mode: insensitive` substring search across `nombre`/`descripcion`) has no supporting index — a leading-wildcard scan that no B-tree index (including `nombre`'s unique index) can serve efficiently as the catalog grows.
+  evidence: Closing it needs a `pg_trgm`/GIN trigram index, infrastructure not used anywhere else in this codebase yet. Worth building once the catalog's real size makes the scan cost concrete, not speculatively now.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-2-search-list-items.md`
+  summary: `InventoryService.list`'s `findMany`/`count` run via `Promise.all`, not inside a transaction — `total` can drift from the returned page under concurrent writes.
+  evidence: Same pre-existing pattern already logged for `AuditService.list`/`UsersService.list` (spec-2-2/1-8 entries) — not a new gap introduced by this story. A proper fix is the same codebase-wide transactional convention noted there.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-2-search-list-items.md`
+  summary: `GET /items`'s `page` cap of 200 (copied from `AuditController`, where "recent-first" access makes it a reasonable ceiling) is unexamined for an alphabetically-ordered catalog with no "jump to record" mechanism — items beyond `200 * pageSize` become permanently unreachable through this endpoint.
+  evidence: Requires an inventory of tens of thousands of items to matter in practice for this CMDB's stated scale (≥19 types, not ≥19 thousand items) — revisit if real usage approaches that size.

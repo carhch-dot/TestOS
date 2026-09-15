@@ -19,6 +19,8 @@ import {
   INVALID_DESCRIPCION_MESSAGE,
   INVALID_DOMINIO_PROPIETARIO_MESSAGE,
   INVALID_DIRECCION_RED_MESSAGE,
+  INVALID_TIPO_FILTER_MESSAGE,
+  INVALID_TEXTO_FILTER_MESSAGE,
 } from './inventory.controller';
 import { InventoryService } from './inventory.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -41,13 +43,16 @@ const CREATED_ITEM = {
   properties: {},
 };
 
+const EMPTY_LIST_RESULT = { data: [], total: 0, page: 1, pageSize: 50 };
+
 describe('InventoryController', () => {
-  let inventoryService: { create: jest.Mock };
+  let inventoryService: { create: jest.Mock; list: jest.Mock };
   let controller: InventoryController;
 
   beforeEach(async () => {
     inventoryService = {
       create: jest.fn().mockResolvedValue(CREATED_ITEM),
+      list: jest.fn().mockResolvedValue(EMPTY_LIST_RESULT),
     };
 
     const moduleRef = await Test.createTestingModule({
@@ -226,6 +231,170 @@ describe('InventoryController', () => {
     });
   });
 
+  describe('list (dispatch)', () => {
+    it('delegates to InventoryService.list with default page/pageSize and no filters when nothing is supplied', async () => {
+      const result = await controller.list();
+
+      expect(inventoryService.list).toHaveBeenCalledWith(
+        { tipo: undefined, texto: undefined },
+        1,
+        50,
+      );
+      expect(result).toEqual(EMPTY_LIST_RESULT);
+    });
+
+    it('parses page/pageSize query params through to the service', async () => {
+      await controller.list('2', '20');
+
+      expect(inventoryService.list).toHaveBeenCalledWith(
+        expect.anything(),
+        2,
+        20,
+      );
+    });
+
+    it.each([
+      ['non-numeric page', 'not-a-number', undefined, 1, 50],
+      ['zero page', '0', undefined, 1, 50],
+      ['negative page', '-1', undefined, 1, 50],
+      ['non-numeric pageSize', undefined, 'abc', 1, 50],
+      ['zero pageSize', undefined, '0', 1, 50],
+      ['negative pageSize', undefined, '-1', 1, 50],
+    ])(
+      'falls back to defaults for %s',
+      async (_label, pageRaw, pageSizeRaw, expectedPage, expectedPageSize) => {
+        await controller.list(pageRaw, pageSizeRaw);
+
+        expect(inventoryService.list).toHaveBeenCalledWith(
+          expect.anything(),
+          expectedPage,
+          expectedPageSize,
+        );
+      },
+    );
+
+    it('clamps an oversized pageSize to the defensive upper bound', async () => {
+      await controller.list('1', '999999');
+
+      expect(inventoryService.list).toHaveBeenCalledWith(
+        expect.anything(),
+        1,
+        200,
+      );
+    });
+
+    it('passes pageSize=200 through unclamped (exact upper boundary)', async () => {
+      await controller.list('1', '200');
+
+      expect(inventoryService.list).toHaveBeenCalledWith(
+        expect.anything(),
+        1,
+        200,
+      );
+    });
+
+    it('clamps pageSize=201 down to 200 (one past the boundary)', async () => {
+      await controller.list('1', '201');
+
+      expect(inventoryService.list).toHaveBeenCalledWith(
+        expect.anything(),
+        1,
+        200,
+      );
+    });
+
+    it('passes page=200 through unclamped (exact upper boundary)', async () => {
+      await controller.list('200', '10');
+
+      expect(inventoryService.list).toHaveBeenCalledWith(
+        expect.anything(),
+        200,
+        10,
+      );
+    });
+
+    it('clamps page=201 down to 200 (one past the boundary)', async () => {
+      await controller.list('201', '10');
+
+      expect(inventoryService.list).toHaveBeenCalledWith(
+        expect.anything(),
+        200,
+        10,
+      );
+    });
+
+    it('passes tipo/texto filters through unchanged', async () => {
+      await controller.list(undefined, undefined, 'DATABASE', 'core');
+
+      expect(inventoryService.list).toHaveBeenCalledWith(
+        { tipo: 'DATABASE', texto: 'core' },
+        1,
+        50,
+      );
+    });
+
+    it.each(['tipo', 'texto'] as const)(
+      'treats an empty-string %s as "no filter," not "filter on the empty string"',
+      async (field) => {
+        const args: Array<string | undefined> = [
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+        ];
+        const index = { tipo: 2, texto: 3 }[field];
+        args[index] = '';
+
+        await controller.list(...(args as Parameters<typeof controller.list>));
+
+        expect(inventoryService.list).toHaveBeenCalledWith(
+          expect.objectContaining({ [field]: undefined }),
+          1,
+          50,
+        );
+      },
+    );
+
+    it('propagates an error raised by the service unchanged', async () => {
+      inventoryService.list.mockRejectedValue(new Error('boom'));
+
+      await expect(controller.list()).rejects.toThrow('boom');
+    });
+
+    it.each(['tipo', 'texto'] as const)(
+      'rejects a repeated %s query key (parsed as an array) with a 400, never calling the service',
+      async (field) => {
+        const args: Array<string | string[] | undefined> = [
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+        ];
+        const index = { tipo: 2, texto: 3 }[field];
+        args[index] = ['A', 'B'];
+
+        await expect(
+          controller.list(...(args as Parameters<typeof controller.list>)),
+        ).rejects.toThrow(BadRequestException);
+        expect(inventoryService.list).not.toHaveBeenCalled();
+      },
+    );
+
+    it('rejects a tipo filter over the length cap, never calling the service', async () => {
+      await expect(
+        controller.list(undefined, undefined, 'a'.repeat(101)),
+      ).rejects.toThrow(INVALID_TIPO_FILTER_MESSAGE);
+      expect(inventoryService.list).not.toHaveBeenCalled();
+    });
+
+    it('rejects a texto filter over the length cap, never calling the service', async () => {
+      await expect(
+        controller.list(undefined, undefined, undefined, 'a'.repeat(256)),
+      ).rejects.toThrow(INVALID_TEXTO_FILTER_MESSAGE);
+      expect(inventoryService.list).not.toHaveBeenCalled();
+    });
+  });
+
   describe('RBAC rejection (overridden guards)', () => {
     it('rejects POST /items with 403 when RolesGuard denies the caller (Read-only)', async () => {
       const moduleRef = await Test.createTestingModule({
@@ -279,6 +448,35 @@ describe('InventoryController', () => {
         .post('/items')
         .send({ nombre: 'core-db', tipo: 'DATABASE' })
         .expect(401);
+
+      await app.close();
+    });
+
+    it('rejects GET /items with 401 when JwtAuthGuard denies an unauthenticated caller', async () => {
+      const moduleRef = await Test.createTestingModule({
+        controllers: [InventoryController],
+        providers: [{ provide: InventoryService, useValue: inventoryService }],
+      })
+        .overrideGuard(JwtAuthGuard)
+        .useValue({
+          canActivate: () => {
+            throw new UnauthorizedException(
+              'Missing or invalid Authorization header',
+            );
+          },
+        })
+        .overrideGuard(RolesGuard)
+        .useValue({ canActivate: () => true })
+        .compile();
+
+      const app = moduleRef.createNestApplication();
+      await app.init();
+
+      await request(app.getHttpServer() as Server)
+        .get('/items')
+        .expect(401);
+
+      expect(inventoryService.list).not.toHaveBeenCalled();
 
       await app.close();
     });
@@ -381,6 +579,102 @@ describe('InventoryController', () => {
         direccionRed: undefined,
         properties: undefined,
       });
+
+      await app.close();
+    });
+
+    // Same posture as AuditController's precedent test (spec-2-2): boots a
+    // real app with the real `@UseGuards(JwtAuthGuard)` chain (real
+    // Reflector included) on the real compiled route, only stubbing
+    // `JwtService.verifyAsync` to hand back role claims. Unlike POST
+    // /items, `GET /items` deliberately carries no `RolesGuard`/
+    // `@Roles(...)` — this proves all four roles reach the service, not
+    // just that the route responds.
+    it('lets all four roles reach the service for GET /items and none is rejected', async () => {
+      const verifyAsync = jest.fn();
+
+      const moduleRef = await Test.createTestingModule({
+        controllers: [InventoryController],
+        providers: [
+          { provide: InventoryService, useValue: inventoryService },
+          JwtAuthGuard,
+          RolesGuard,
+          { provide: JwtService, useValue: { verifyAsync } },
+        ],
+      }).compile();
+
+      const app = moduleRef.createNestApplication();
+      await app.init();
+      const server = app.getHttpServer() as Server;
+
+      for (const role of [
+        UsuarioRole.ADMINISTRATOR,
+        UsuarioRole.MANAGER,
+        UsuarioRole.EDITOR,
+        UsuarioRole.READ_ONLY,
+      ]) {
+        verifyAsync.mockResolvedValueOnce({
+          sub: 'caller-1',
+          email: 'caller@example.com',
+          role,
+        });
+
+        await request(server)
+          .get('/items')
+          .set('Authorization', 'Bearer a-valid-token')
+          .expect(200);
+      }
+
+      expect(inventoryService.list).toHaveBeenCalledTimes(4);
+
+      await request(server).get('/items').expect(401);
+
+      await app.close();
+    });
+
+    it('returns the service payload for a successful GET /items call', async () => {
+      const verifyAsync = jest.fn().mockResolvedValue({
+        sub: 'caller-1',
+        email: 'caller@example.com',
+        role: UsuarioRole.READ_ONLY,
+      });
+      inventoryService.list.mockResolvedValue({
+        data: [CREATED_ITEM],
+        total: 1,
+        page: 1,
+        pageSize: 50,
+      });
+
+      const moduleRef = await Test.createTestingModule({
+        controllers: [InventoryController],
+        providers: [
+          { provide: InventoryService, useValue: inventoryService },
+          JwtAuthGuard,
+          RolesGuard,
+          { provide: JwtService, useValue: { verifyAsync } },
+        ],
+      }).compile();
+
+      const app = moduleRef.createNestApplication();
+      await app.init();
+
+      const response = await request(app.getHttpServer() as Server)
+        .get('/items')
+        .query({ tipo: 'DATABASE', texto: 'core' })
+        .set('Authorization', 'Bearer a-valid-token')
+        .expect(200);
+
+      expect(response.body).toEqual({
+        data: [CREATED_ITEM],
+        total: 1,
+        page: 1,
+        pageSize: 50,
+      });
+      expect(inventoryService.list).toHaveBeenCalledWith(
+        { tipo: 'DATABASE', texto: 'core' },
+        1,
+        50,
+      );
 
       await app.close();
     });

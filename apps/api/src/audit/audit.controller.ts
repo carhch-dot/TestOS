@@ -23,6 +23,9 @@ const MAX_PAGE = 200;
 export const INVALID_TIPO_ACCION_MESSAGE = 'Invalid tipoAccion';
 export const INVALID_DESDE_MESSAGE = 'Invalid desde date';
 export const INVALID_HASTA_MESSAGE = 'Invalid hasta date';
+export const INVALID_USUARIO_ID_MESSAGE = 'usuarioId must be a single string';
+export const INVALID_ENTIDAD_MESSAGE = 'entidad must be a single string';
+export const INVALID_ENTIDAD_ID_MESSAGE = 'entidadId must be a single string';
 
 /**
  * `GET /audit` (spec-2-2, FR-29) — the sole read path onto
@@ -42,9 +45,9 @@ export class AuditController {
   async list(
     @Query('page') pageRaw?: string,
     @Query('pageSize') pageSizeRaw?: string,
-    @Query('usuarioId') usuarioIdRaw?: string,
-    @Query('entidad') entidadRaw?: string,
-    @Query('entidadId') entidadIdRaw?: string,
+    @Query('usuarioId') usuarioIdRaw?: string | string[],
+    @Query('entidad') entidadRaw?: string | string[],
+    @Query('entidadId') entidadIdRaw?: string | string[],
     @Query('tipoAccion') tipoAccionRaw?: string,
     @Query('desde') desdeRaw?: string,
     @Query('hasta') hastaRaw?: string,
@@ -57,10 +60,21 @@ export class AuditController {
 
     // An empty-string value (e.g. `?usuarioId=`) means "no filter," not "filter
     // on the empty string" — otherwise it would silently return zero results
-    // instead of the unfiltered list.
-    const usuarioId = usuarioIdRaw || undefined;
-    const entidad = entidadRaw || undefined;
-    const entidadId = entidadIdRaw || undefined;
+    // instead of the unfiltered list. A repeated query key (`?usuarioId=a&
+    // usuarioId=b`) parses to a string[] under Nest/Express — rejected with
+    // a clean 400 rather than reaching Prisma as an unexpected type.
+    const usuarioId = parseOptionalStringFilter(
+      usuarioIdRaw,
+      INVALID_USUARIO_ID_MESSAGE,
+    );
+    const entidad = parseOptionalStringFilter(
+      entidadRaw,
+      INVALID_ENTIDAD_MESSAGE,
+    );
+    const entidadId = parseOptionalStringFilter(
+      entidadIdRaw,
+      INVALID_ENTIDAD_ID_MESSAGE,
+    );
 
     let tipoAccion: TipoAccion | undefined;
     if (tipoAccionRaw !== undefined) {
@@ -87,6 +101,19 @@ function parsePositiveInt(raw: string | undefined, fallback: number): number {
   }
   const parsed = Number(raw);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function parseOptionalStringFilter(
+  raw: string | string[] | undefined,
+  message: string,
+): string | undefined {
+  if (raw === undefined || raw === '') {
+    return undefined;
+  }
+  if (typeof raw !== 'string') {
+    throw new BadRequestException(message);
+  }
+  return raw;
 }
 
 // No cross-check that desde <= hasta (spec Boundaries: "a swapped range just
