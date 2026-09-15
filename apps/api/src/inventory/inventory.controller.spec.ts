@@ -52,6 +52,7 @@ describe('InventoryController', () => {
   let inventoryService: {
     create: jest.Mock;
     update: jest.Mock;
+    remove: jest.Mock;
     list: jest.Mock;
   };
   let controller: InventoryController;
@@ -60,6 +61,7 @@ describe('InventoryController', () => {
     inventoryService = {
       create: jest.fn().mockResolvedValue(CREATED_ITEM),
       update: jest.fn().mockResolvedValue(CREATED_ITEM),
+      remove: jest.fn().mockResolvedValue(undefined),
       list: jest.fn().mockResolvedValue(EMPTY_LIST_RESULT),
     };
 
@@ -409,6 +411,52 @@ describe('InventoryController', () => {
     });
   });
 
+  describe('remove (dispatch)', () => {
+    it('delegates to InventoryService.remove with the id and the caller id (from the token)', async () => {
+      const result = await controller.remove(
+        'item-1',
+        makeRequest('caller-1', UsuarioRole.EDITOR),
+      );
+
+      expect(inventoryService.remove).toHaveBeenCalledWith(
+        'caller-1',
+        'item-1',
+      );
+      expect(result).toBeUndefined();
+    });
+
+    it('propagates a NotFoundException raised by the service unchanged', async () => {
+      inventoryService.remove.mockRejectedValue(
+        new NotFoundException('Item not found.'),
+      );
+
+      await expect(
+        controller.remove(
+          'missing-item',
+          makeRequest('caller-1', UsuarioRole.EDITOR),
+        ),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('propagates an error raised by the service unchanged', async () => {
+      inventoryService.remove.mockRejectedValue(new Error('boom'));
+
+      await expect(
+        controller.remove(
+          'item-1',
+          makeRequest('caller-1', UsuarioRole.EDITOR),
+        ),
+      ).rejects.toThrow('boom');
+    });
+
+    it('rejects when request.user is unexpectedly absent (defensive 401)', async () => {
+      await expect(
+        controller.remove('item-1', {} as AuthenticatedRequest),
+      ).rejects.toThrow(UnauthorizedException);
+      expect(inventoryService.remove).not.toHaveBeenCalled();
+    });
+  });
+
   describe('list (dispatch)', () => {
     it('delegates to InventoryService.list with default page/pageSize and no filters when nothing is supplied', async () => {
       const result = await controller.list();
@@ -720,6 +768,67 @@ describe('InventoryController', () => {
 
       await app.close();
     });
+
+    // spec-3-4 I/O matrix's "Insufficient role" row: Read-only (Consulta)
+    // caller rejected with 403, no state change.
+    it('rejects DELETE /items/:id with 403 when RolesGuard denies the caller (Read-only)', async () => {
+      const moduleRef = await Test.createTestingModule({
+        controllers: [InventoryController],
+        providers: [{ provide: InventoryService, useValue: inventoryService }],
+      })
+        .overrideGuard(JwtAuthGuard)
+        .useValue({ canActivate: () => true })
+        .overrideGuard(RolesGuard)
+        .useValue({
+          canActivate: () => {
+            throw new ForbiddenException(
+              'You do not have permission to perform this action',
+            );
+          },
+        })
+        .compile();
+
+      const app = moduleRef.createNestApplication();
+      await app.init();
+
+      await request(app.getHttpServer() as Server)
+        .delete('/items/item-1')
+        .expect(403);
+
+      expect(inventoryService.remove).not.toHaveBeenCalled();
+
+      await app.close();
+    });
+
+    // spec-3-4 I/O matrix's "Unauthenticated" row.
+    it('rejects DELETE /items/:id with 401 when JwtAuthGuard denies an unauthenticated caller', async () => {
+      const moduleRef = await Test.createTestingModule({
+        controllers: [InventoryController],
+        providers: [{ provide: InventoryService, useValue: inventoryService }],
+      })
+        .overrideGuard(JwtAuthGuard)
+        .useValue({
+          canActivate: () => {
+            throw new UnauthorizedException(
+              'Missing or invalid Authorization header',
+            );
+          },
+        })
+        .overrideGuard(RolesGuard)
+        .useValue({ canActivate: () => true })
+        .compile();
+
+      const app = moduleRef.createNestApplication();
+      await app.init();
+
+      await request(app.getHttpServer() as Server)
+        .delete('/items/item-1')
+        .expect(401);
+
+      expect(inventoryService.remove).not.toHaveBeenCalled();
+
+      await app.close();
+    });
   });
 
   describe('RBAC (real guards)', () => {
@@ -952,6 +1061,129 @@ describe('InventoryController', () => {
         .send({ descripcion: 'x' })
         .set('Authorization', 'Bearer a-valid-token')
         .expect(404);
+
+      await app.close();
+    });
+
+    // Same real-guard-chain posture as POST/PATCH above, applied to DELETE
+    // /items/:id: EDITOR/MANAGER/ADMINISTRATOR reach the service, READ_ONLY
+    // is rejected with 403, unauthenticated with 401 (spec-3-4 I/O matrix).
+    it('lets EDITOR/MANAGER/ADMINISTRATOR tokens reach the service for DELETE /items/:id and rejects READ_ONLY with 403', async () => {
+      const verifyAsync = jest.fn();
+
+      const moduleRef = await Test.createTestingModule({
+        controllers: [InventoryController],
+        providers: [
+          { provide: InventoryService, useValue: inventoryService },
+          JwtAuthGuard,
+          RolesGuard,
+          { provide: JwtService, useValue: { verifyAsync } },
+        ],
+      }).compile();
+
+      const app = moduleRef.createNestApplication();
+      await app.init();
+      const server = app.getHttpServer() as Server;
+
+      for (const role of [
+        UsuarioRole.EDITOR,
+        UsuarioRole.MANAGER,
+        UsuarioRole.ADMINISTRATOR,
+      ]) {
+        verifyAsync.mockResolvedValueOnce({
+          sub: 'caller-1',
+          email: 'caller@example.com',
+          role,
+        });
+
+        await request(server)
+          .delete('/items/item-1')
+          .set('Authorization', 'Bearer a-valid-token')
+          .expect(204);
+      }
+
+      verifyAsync.mockResolvedValueOnce({
+        sub: 'caller-2',
+        email: 'readonly@example.com',
+        role: UsuarioRole.READ_ONLY,
+      });
+
+      await request(server)
+        .delete('/items/item-1')
+        .set('Authorization', 'Bearer a-valid-token')
+        .expect(403);
+
+      await request(server).delete('/items/item-1').expect(401);
+
+      await app.close();
+    });
+
+    it('returns 204 with an empty body and calls the service for a successful DELETE /items/:id', async () => {
+      const verifyAsync = jest.fn().mockResolvedValue({
+        sub: 'caller-1',
+        email: 'caller@example.com',
+        role: UsuarioRole.EDITOR,
+      });
+
+      const moduleRef = await Test.createTestingModule({
+        controllers: [InventoryController],
+        providers: [
+          { provide: InventoryService, useValue: inventoryService },
+          JwtAuthGuard,
+          RolesGuard,
+          { provide: JwtService, useValue: { verifyAsync } },
+        ],
+      }).compile();
+
+      const app = moduleRef.createNestApplication();
+      await app.init();
+
+      const response = await request(app.getHttpServer() as Server)
+        .delete('/items/item-1')
+        .set('Authorization', 'Bearer a-valid-token')
+        .expect(204);
+
+      expect(response.body).toEqual({});
+      expect(inventoryService.remove).toHaveBeenCalledWith(
+        'caller-1',
+        'item-1',
+      );
+
+      await app.close();
+    });
+
+    it('returns 404 for DELETE /items/:id when the service reports the item does not exist', async () => {
+      const verifyAsync = jest.fn().mockResolvedValue({
+        sub: 'caller-1',
+        email: 'caller@example.com',
+        role: UsuarioRole.EDITOR,
+      });
+      inventoryService.remove.mockRejectedValue(
+        new NotFoundException('Item not found.'),
+      );
+
+      const moduleRef = await Test.createTestingModule({
+        controllers: [InventoryController],
+        providers: [
+          { provide: InventoryService, useValue: inventoryService },
+          JwtAuthGuard,
+          RolesGuard,
+          { provide: JwtService, useValue: { verifyAsync } },
+        ],
+      }).compile();
+
+      const app = moduleRef.createNestApplication();
+      await app.init();
+
+      await request(app.getHttpServer() as Server)
+        .delete('/items/missing-item')
+        .set('Authorization', 'Bearer a-valid-token')
+        .expect(404);
+
+      expect(inventoryService.remove).toHaveBeenCalledWith(
+        'caller-1',
+        'missing-item',
+      );
 
       await app.close();
     });

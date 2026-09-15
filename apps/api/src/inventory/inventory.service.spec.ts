@@ -47,6 +47,7 @@ describe('InventoryService', () => {
     itemConfiguracion: {
       create: jest.Mock<Promise<ItemRow>, [unknown]>;
       update: jest.Mock<Promise<ItemRow>, [unknown]>;
+      delete: jest.Mock<Promise<ItemRow>, [unknown]>;
     };
   };
   let auditService: { record: jest.Mock };
@@ -59,6 +60,9 @@ describe('InventoryService', () => {
           .fn<Promise<ItemRow>, [unknown]>()
           .mockResolvedValue(CREATED_ITEM),
         update: jest
+          .fn<Promise<ItemRow>, [unknown]>()
+          .mockResolvedValue(CREATED_ITEM),
+        delete: jest
           .fn<Promise<ItemRow>, [unknown]>()
           .mockResolvedValue(CREATED_ITEM),
       },
@@ -479,6 +483,158 @@ describe('InventoryService', () => {
       await expect(
         service.update('user-1', 'item-1', { descripcion: 'x' }),
       ).rejects.toThrow('audit write failed');
+    });
+
+    // spec-3-4 I/O matrix's "Concurrent update-during-delete" row: the item
+    // vanishes between update's own up-front findUnique and its
+    // transactional tx.itemConfiguracion.update, which then hits Prisma's
+    // P2025 ("record not found") — surfaced as the same 404 every other
+    // unknown-id path returns, not a raw 500, and no audit entry recorded.
+    it('converts a concurrent record-not-found (P2025) on the transactional update into a 404, recording no audit entry', async () => {
+      tx.itemConfiguracion.update.mockRejectedValue(
+        new Prisma.PrismaClientKnownRequestError('Record to update not found', {
+          code: 'P2025',
+          clientVersion: 'test',
+        }),
+      );
+
+      await expect(
+        service.update('user-1', 'item-1', { descripcion: 'x' }),
+      ).rejects.toThrow(NotFoundException);
+      await expect(
+        service.update('user-1', 'item-1', { descripcion: 'x' }),
+      ).rejects.toThrow(ITEM_NOT_FOUND_MESSAGE);
+      expect(auditService.record).not.toHaveBeenCalled();
+    });
+  });
+
+  // spec-3-4: `remove(usuarioId, id)` — permanent hard delete of an
+  // `ItemConfiguracion`. `prisma.itemConfiguracion.findUnique` supplies both
+  // the pre-deletion snapshot and the 404 check; the row delete and its
+  // audit entry go through the same `tx`-scoped transaction pattern as
+  // `create`/`update`.
+  describe('remove', () => {
+    const EXISTING_ITEM: ItemRow = {
+      id: 'item-1',
+      nombre: 'core-db',
+      descripcion: 'Core database',
+      dominioPropietario: 'platform',
+      direccionRed: '10.0.0.1',
+      tipo: 'DATABASE',
+      properties: { engine: 'postgres', version: '14' },
+    };
+
+    beforeEach(() => {
+      prisma.itemConfiguracion.findUnique.mockResolvedValue(EXISTING_ITEM);
+      tx.itemConfiguracion.delete.mockResolvedValue(EXISTING_ITEM);
+    });
+
+    // I/O matrix row 1 + first Acceptance Criterion: item removed, exactly
+    // one DELETE audit row with a full pre-deletion snapshot in cambios.
+    it('deletes the item and records exactly one DELETE audit entry with a full pre-deletion snapshot, through the same tx', async () => {
+      await service.remove('user-1', 'item-1');
+
+      expect(tx.itemConfiguracion.delete).toHaveBeenCalledWith({
+        where: { id: 'item-1' },
+      });
+      expect(auditService.record).toHaveBeenCalledTimes(1);
+      expect(auditService.record).toHaveBeenCalledWith(tx, {
+        usuarioId: 'user-1',
+        tipoAccion: TipoAccion.DELETE,
+        entidad: 'ItemConfiguracion',
+        entidadId: EXISTING_ITEM.id,
+        cambios: {
+          nombre: EXISTING_ITEM.nombre,
+          descripcion: EXISTING_ITEM.descripcion,
+          dominioPropietario: EXISTING_ITEM.dominioPropietario,
+          direccionRed: EXISTING_ITEM.direccionRed,
+          tipo: EXISTING_ITEM.tipo,
+          properties: EXISTING_ITEM.properties,
+        },
+      });
+    });
+
+    // I/O matrix row 2 + third Acceptance Criterion: unknown item id -> 404,
+    // no transaction started, no audit entry.
+    it('rejects an unknown item id with a NotFoundException, before starting a transaction', async () => {
+      prisma.itemConfiguracion.findUnique.mockResolvedValue(null);
+
+      await expect(service.remove('user-1', 'missing-item')).rejects.toThrow(
+        NotFoundException,
+      );
+      await expect(service.remove('user-1', 'missing-item')).rejects.toThrow(
+        ITEM_NOT_FOUND_MESSAGE,
+      );
+
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+      expect(auditService.record).not.toHaveBeenCalled();
+    });
+
+    // Regression: the audit cambios snapshot must come from
+    // tx.itemConfiguracion.delete's own return value, not the earlier
+    // up-front findUnique — otherwise a concurrent update that commits
+    // between the two would make the audit entry record stale pre-delete
+    // field values instead of what was actually deleted.
+    it('builds the audit snapshot from the transactional delete result, not the earlier findUnique read', async () => {
+      const staleReadItem = { ...EXISTING_ITEM, descripcion: 'stale' };
+      const actuallyDeletedItem = {
+        ...EXISTING_ITEM,
+        descripcion: 'updated concurrently before delete committed',
+      };
+      prisma.itemConfiguracion.findUnique.mockResolvedValue(staleReadItem);
+      tx.itemConfiguracion.delete.mockResolvedValue(actuallyDeletedItem);
+
+      await service.remove('user-1', 'item-1');
+
+      const [, params] = auditService.record.mock.calls[0] as [
+        unknown,
+        { cambios: { descripcion: string } },
+      ];
+      expect(params.cambios.descripcion).toBe(
+        'updated concurrently before delete committed',
+      );
+    });
+
+    // I/O matrix row 5 (Concurrent double-delete): the loser's
+    // tx.itemConfiguracion.delete hits Prisma's P2025 once the winner has
+    // already removed the row -- surfaced as the same 404, no audit entry.
+    it('converts a concurrent record-not-found (P2025) into a 404, recording no audit entry', async () => {
+      tx.itemConfiguracion.delete.mockRejectedValue(
+        new Prisma.PrismaClientKnownRequestError(
+          'Record to delete does not exist',
+          { code: 'P2025', clientVersion: 'test' },
+        ),
+      );
+
+      await expect(service.remove('user-1', 'item-1')).rejects.toThrow(
+        NotFoundException,
+      );
+      await expect(service.remove('user-1', 'item-1')).rejects.toThrow(
+        ITEM_NOT_FOUND_MESSAGE,
+      );
+      expect(auditService.record).not.toHaveBeenCalled();
+    });
+
+    // A non-P2025 error out of the transaction must not be misclassified as
+    // a not-found.
+    it('rethrows a non-P2025 error unchanged', async () => {
+      tx.itemConfiguracion.delete.mockRejectedValue(
+        new Error('connection lost'),
+      );
+
+      await expect(service.remove('user-1', 'item-1')).rejects.toThrow(
+        'connection lost',
+      );
+    });
+
+    // Same all-or-nothing guarantee as create/update: a failure from
+    // AuditService.record propagates out of remove() unchanged.
+    it('propagates a failure from AuditService.record, never swallowing it as a partial success', async () => {
+      auditService.record.mockRejectedValue(new Error('audit write failed'));
+
+      await expect(service.remove('user-1', 'item-1')).rejects.toThrow(
+        'audit write failed',
+      );
     });
   });
 

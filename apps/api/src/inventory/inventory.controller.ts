@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   HttpStatus,
@@ -247,6 +248,30 @@ export class InventoryController {
       direccionRed: body.direccionRed,
       properties: body.properties,
     });
+  }
+
+  /**
+   * `DELETE /items/:id` (spec-3-4) — permanently removes an
+   * `ItemConfiguracion`. Same RBAC as `create`/`update` (Editor and above).
+   * `204 No Content` with an empty body — standard REST for a delete with
+   * nothing meaningful left to return (spec Boundaries).
+   */
+  @Delete(':id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UsuarioRole.EDITOR, UsuarioRole.MANAGER, UsuarioRole.ADMINISTRATOR)
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async remove(
+    @Param('id') id: string,
+    @Req() request: AuthenticatedRequest,
+  ): Promise<void> {
+    // Same defensive posture as `create`/`update`: `request.user` is always
+    // set by this point (`JwtAuthGuard` runs first and throws otherwise);
+    // the check below is defensive only.
+    if (!request.user) {
+      throw new UnauthorizedException();
+    }
+
+    await this.inventoryService.remove(request.user.sub, id);
   }
 
   /**

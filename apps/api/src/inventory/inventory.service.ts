@@ -271,6 +271,17 @@ export class InventoryService {
         ) {
           throw new ConflictException(NAME_ALREADY_EXISTS_MESSAGE);
         }
+        // The race spec-3-4 makes reachable: with delete now existing, the
+        // item can vanish between this method's own up-front findUnique and
+        // this transactional update, so Prisma reports "record not found"
+        // (P2025) here instead of ever completing the write. Surfaced as the
+        // same 404 every other unknown-id path returns, not a raw 500.
+        if (
+          error instanceof Prisma.PrismaClientKnownRequestError &&
+          error.code === 'P2025'
+        ) {
+          throw new NotFoundException(ITEM_NOT_FOUND_MESSAGE);
+        }
         throw error;
       }
 
@@ -283,6 +294,65 @@ export class InventoryService {
       });
 
       return item;
+    });
+  }
+
+  /**
+   * Permanent removal of an `ItemConfiguracion` (spec-3-4) — hard delete
+   * (`prisma.itemConfiguracion.delete`); no soft-delete/`activo` flag exists
+   * on `ItemConfiguracion` (spec-3-1's schema has none; spec Boundaries).
+   * `prisma.itemConfiguracion.findUnique` supplies the up-front 404 check,
+   * exactly as `update` does — but the audit `cambios` snapshot is built
+   * from `tx.itemConfiguracion.delete`'s own return value, not this earlier
+   * read, so a concurrent `update` that commits between the two can never
+   * make the audit entry record stale pre-delete field values (mirrors
+   * `create`/`update`, which both build their audit payload from their own
+   * mutation's return value, never from an earlier read). The row delete and
+   * its `RegistroAuditoria` entry happen inside one `prisma.$transaction`
+   * (AD-3). Unlike `update`, there is no "after" state — `cambios` is a full
+   * snapshot of the item as it existed right before deletion, mirroring
+   * `create`'s shape (the natural "reverse" of a create; spec Boundaries).
+   */
+  async remove(usuarioId: string, id: string): Promise<void> {
+    const existingItem = await this.prisma.itemConfiguracion.findUnique({
+      where: { id },
+    });
+    if (!existingItem) {
+      throw new NotFoundException(ITEM_NOT_FOUND_MESSAGE);
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      let deletedItem: ItemConfiguracion;
+      try {
+        deletedItem = await tx.itemConfiguracion.delete({ where: { id } });
+      } catch (error) {
+        // Concurrent double-delete: the loser's tx.itemConfiguracion.delete
+        // hits Prisma's "record not found" (P2025) once the winner has
+        // already removed the row — surfaced as the same 404 rather than a
+        // raw 500 (spec I/O matrix: "Concurrent double-delete").
+        if (
+          error instanceof Prisma.PrismaClientKnownRequestError &&
+          error.code === 'P2025'
+        ) {
+          throw new NotFoundException(ITEM_NOT_FOUND_MESSAGE);
+        }
+        throw error;
+      }
+
+      await this.auditService.record(tx, {
+        usuarioId,
+        tipoAccion: TipoAccion.DELETE,
+        entidad: 'ItemConfiguracion',
+        entidadId: deletedItem.id,
+        cambios: {
+          nombre: deletedItem.nombre,
+          descripcion: deletedItem.descripcion,
+          dominioPropietario: deletedItem.dominioPropietario,
+          direccionRed: deletedItem.direccionRed,
+          tipo: deletedItem.tipo,
+          properties: deletedItem.properties as Prisma.InputJsonValue,
+        },
+      });
     });
   }
 

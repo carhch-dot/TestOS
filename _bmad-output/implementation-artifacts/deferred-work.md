@@ -133,3 +133,7 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-3-2-search-list-items.md`
   summary: `GET /items`'s `page` cap of 200 (copied from `AuditController`, where "recent-first" access makes it a reasonable ceiling) is unexamined for an alphabetically-ordered catalog with no "jump to record" mechanism — items beyond `200 * pageSize` become permanently unreachable through this endpoint.
   evidence: Requires an inventory of tens of thousands of items to matter in practice for this CMDB's stated scale (≥19 types, not ≥19 thousand items) — revisit if real usage approaches that size.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-4-delete-item.md`
+  summary: `JwtAuthGuard`'s by-design tolerance for a stale role claim (never re-queries the DB; a demoted user's still-unexpired token keeps its old role until expiry) previously only ever gated recoverable actions (create/update). Story 3.4 extends the same guard/`@Roles()` posture to `DELETE /items/:id`, a hard, non-recoverable delete with no soft-delete/trash — a just-demoted user can now permanently destroy inventory data until their token naturally expires.
+  evidence: Fixing this needs either DB-backed role re-verification on every request (defeats the point of a stateless JWT) or a narrower reauth-for-destructive-actions step — both are auth-architecture decisions affecting every mutating endpoint, not a single-story fix. Revisit if this access-token TTL, or the blast radius of what a compromised/stale token can irreversibly destroy, becomes a real operational concern.
