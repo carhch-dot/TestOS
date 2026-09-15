@@ -2,6 +2,7 @@ import { Test } from '@nestjs/testing';
 import {
   BadRequestException,
   ForbiddenException,
+  NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
@@ -11,6 +12,7 @@ import { UsuarioRole } from '@prisma/client';
 import {
   InventoryController,
   CreateItemRequestDto,
+  UpdateItemRequestDto,
   MISSING_NOMBRE_MESSAGE,
   INVALID_NOMBRE_LENGTH_MESSAGE,
   MISSING_TIPO_MESSAGE,
@@ -21,6 +23,7 @@ import {
   INVALID_DIRECCION_RED_MESSAGE,
   INVALID_TIPO_FILTER_MESSAGE,
   INVALID_TEXTO_FILTER_MESSAGE,
+  NO_FIELDS_TO_UPDATE_MESSAGE,
 } from './inventory.controller';
 import { InventoryService } from './inventory.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -46,12 +49,17 @@ const CREATED_ITEM = {
 const EMPTY_LIST_RESULT = { data: [], total: 0, page: 1, pageSize: 50 };
 
 describe('InventoryController', () => {
-  let inventoryService: { create: jest.Mock; list: jest.Mock };
+  let inventoryService: {
+    create: jest.Mock;
+    update: jest.Mock;
+    list: jest.Mock;
+  };
   let controller: InventoryController;
 
   beforeEach(async () => {
     inventoryService = {
       create: jest.fn().mockResolvedValue(CREATED_ITEM),
+      update: jest.fn().mockResolvedValue(CREATED_ITEM),
       list: jest.fn().mockResolvedValue(EMPTY_LIST_RESULT),
     };
 
@@ -228,6 +236,176 @@ describe('InventoryController', () => {
         ),
       ).rejects.toThrow(UnauthorizedException);
       expect(inventoryService.create).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('update (dispatch)', () => {
+    it('delegates to InventoryService.update with the id, caller id (from the token), and the body fields', async () => {
+      const body: UpdateItemRequestDto = {
+        descripcion: 'Updated description',
+        properties: { version: '15' },
+      };
+
+      const result = await controller.update(
+        'item-1',
+        body,
+        makeRequest('caller-1', UsuarioRole.EDITOR),
+      );
+
+      expect(inventoryService.update).toHaveBeenCalledWith(
+        'caller-1',
+        'item-1',
+        {
+          nombre: undefined,
+          tipo: undefined,
+          descripcion: 'Updated description',
+          dominioPropietario: undefined,
+          direccionRed: undefined,
+          properties: { version: '15' },
+        },
+      );
+      expect(result).toEqual(CREATED_ITEM);
+    });
+
+    // I/O matrix row: body has zero recognized fields -> 400, service never
+    // called.
+    it('rejects a body with zero recognized fields with a 400, never calling the service', async () => {
+      await expect(
+        controller.update(
+          'item-1',
+          {},
+          makeRequest('caller-1', UsuarioRole.EDITOR),
+        ),
+      ).rejects.toThrow(BadRequestException);
+      await expect(
+        controller.update(
+          'item-1',
+          {},
+          makeRequest('caller-1', UsuarioRole.EDITOR),
+        ),
+      ).rejects.toThrow(NO_FIELDS_TO_UPDATE_MESSAGE);
+      expect(inventoryService.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects a blank supplied nombre with a 400, never calling the service', async () => {
+      await expect(
+        controller.update(
+          'item-1',
+          { nombre: '   ' },
+          makeRequest('caller-1', UsuarioRole.EDITOR),
+        ),
+      ).rejects.toThrow(MISSING_NOMBRE_MESSAGE);
+      expect(inventoryService.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects a supplied nombre over the length cap, never calling the service', async () => {
+      await expect(
+        controller.update(
+          'item-1',
+          { nombre: 'a'.repeat(256) },
+          makeRequest('caller-1', UsuarioRole.EDITOR),
+        ),
+      ).rejects.toThrow(INVALID_NOMBRE_LENGTH_MESSAGE);
+      expect(inventoryService.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects a blank supplied tipo with a 400, never calling the service', async () => {
+      await expect(
+        controller.update(
+          'item-1',
+          { tipo: '   ' },
+          makeRequest('caller-1', UsuarioRole.EDITOR),
+        ),
+      ).rejects.toThrow(MISSING_TIPO_MESSAGE);
+      expect(inventoryService.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects a supplied tipo over the length cap, never calling the service', async () => {
+      await expect(
+        controller.update(
+          'item-1',
+          { tipo: 'a'.repeat(101) },
+          makeRequest('caller-1', UsuarioRole.EDITOR),
+        ),
+      ).rejects.toThrow(INVALID_TIPO_LENGTH_MESSAGE);
+      expect(inventoryService.update).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['descripcion', 123, INVALID_DESCRIPCION_MESSAGE],
+      ['dominioPropietario', 123, INVALID_DOMINIO_PROPIETARIO_MESSAGE],
+      ['direccionRed', 123, INVALID_DIRECCION_RED_MESSAGE],
+    ])(
+      'rejects a non-string %s, never calling the service',
+      async (field, value, message) => {
+        const body = { [field]: value } as unknown as UpdateItemRequestDto;
+
+        await expect(
+          controller.update(
+            'item-1',
+            body,
+            makeRequest('caller-1', UsuarioRole.EDITOR),
+          ),
+        ).rejects.toThrow(message);
+        expect(inventoryService.update).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([
+      ['a string', 'not-an-object'],
+      ['an array', ['a', 'b']],
+      ['null', null],
+    ])(
+      'rejects properties that is %s with a 400, never calling the service',
+      async (_label, properties) => {
+        const body = { properties } as unknown as UpdateItemRequestDto;
+
+        await expect(
+          controller.update(
+            'item-1',
+            body,
+            makeRequest('caller-1', UsuarioRole.EDITOR),
+          ),
+        ).rejects.toThrow(INVALID_PROPERTIES_MESSAGE);
+        expect(inventoryService.update).not.toHaveBeenCalled();
+      },
+    );
+
+    it('propagates a NotFoundException raised by the service unchanged', async () => {
+      inventoryService.update.mockRejectedValue(
+        new NotFoundException('Item not found.'),
+      );
+
+      await expect(
+        controller.update(
+          'missing-item',
+          { descripcion: 'x' },
+          makeRequest('caller-1', UsuarioRole.EDITOR),
+        ),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('propagates an error raised by the service unchanged', async () => {
+      inventoryService.update.mockRejectedValue(new Error('boom'));
+
+      await expect(
+        controller.update(
+          'item-1',
+          { descripcion: 'x' },
+          makeRequest('caller-1', UsuarioRole.EDITOR),
+        ),
+      ).rejects.toThrow('boom');
+    });
+
+    it('rejects when request.user is unexpectedly absent (defensive 401)', async () => {
+      await expect(
+        controller.update(
+          'item-1',
+          { descripcion: 'x' },
+          {} as AuthenticatedRequest,
+        ),
+      ).rejects.toThrow(UnauthorizedException);
+      expect(inventoryService.update).not.toHaveBeenCalled();
     });
   });
 
@@ -480,6 +658,68 @@ describe('InventoryController', () => {
 
       await app.close();
     });
+
+    // I/O matrix's final row: Read-only (Consulta) caller rejected with 403,
+    // no state change.
+    it('rejects PATCH /items/:id with 403 when RolesGuard denies the caller (Read-only)', async () => {
+      const moduleRef = await Test.createTestingModule({
+        controllers: [InventoryController],
+        providers: [{ provide: InventoryService, useValue: inventoryService }],
+      })
+        .overrideGuard(JwtAuthGuard)
+        .useValue({ canActivate: () => true })
+        .overrideGuard(RolesGuard)
+        .useValue({
+          canActivate: () => {
+            throw new ForbiddenException(
+              'You do not have permission to perform this action',
+            );
+          },
+        })
+        .compile();
+
+      const app = moduleRef.createNestApplication();
+      await app.init();
+
+      await request(app.getHttpServer() as Server)
+        .patch('/items/item-1')
+        .send({ descripcion: 'x' })
+        .expect(403);
+
+      expect(inventoryService.update).not.toHaveBeenCalled();
+
+      await app.close();
+    });
+
+    it('rejects PATCH /items/:id with 401 when JwtAuthGuard denies an unauthenticated caller', async () => {
+      const moduleRef = await Test.createTestingModule({
+        controllers: [InventoryController],
+        providers: [{ provide: InventoryService, useValue: inventoryService }],
+      })
+        .overrideGuard(JwtAuthGuard)
+        .useValue({
+          canActivate: () => {
+            throw new UnauthorizedException(
+              'Missing or invalid Authorization header',
+            );
+          },
+        })
+        .overrideGuard(RolesGuard)
+        .useValue({ canActivate: () => true })
+        .compile();
+
+      const app = moduleRef.createNestApplication();
+      await app.init();
+
+      await request(app.getHttpServer() as Server)
+        .patch('/items/item-1')
+        .send({ descripcion: 'x' })
+        .expect(401);
+
+      expect(inventoryService.update).not.toHaveBeenCalled();
+
+      await app.close();
+    });
   });
 
   describe('RBAC (real guards)', () => {
@@ -579,6 +819,139 @@ describe('InventoryController', () => {
         direccionRed: undefined,
         properties: undefined,
       });
+
+      await app.close();
+    });
+
+    // Same real-guard-chain posture as the POST /items test above, applied
+    // to PATCH /items/:id: EDITOR/MANAGER/ADMINISTRATOR reach the service,
+    // READ_ONLY is rejected with 403, unauthenticated with 401.
+    it('lets EDITOR/MANAGER/ADMINISTRATOR tokens reach the service for PATCH /items/:id and rejects READ_ONLY with 403', async () => {
+      const verifyAsync = jest.fn();
+
+      const moduleRef = await Test.createTestingModule({
+        controllers: [InventoryController],
+        providers: [
+          { provide: InventoryService, useValue: inventoryService },
+          JwtAuthGuard,
+          RolesGuard,
+          { provide: JwtService, useValue: { verifyAsync } },
+        ],
+      }).compile();
+
+      const app = moduleRef.createNestApplication();
+      await app.init();
+      const server = app.getHttpServer() as Server;
+
+      for (const role of [
+        UsuarioRole.EDITOR,
+        UsuarioRole.MANAGER,
+        UsuarioRole.ADMINISTRATOR,
+      ]) {
+        verifyAsync.mockResolvedValueOnce({
+          sub: 'caller-1',
+          email: 'caller@example.com',
+          role,
+        });
+
+        await request(server)
+          .patch('/items/item-1')
+          .send({ descripcion: 'Updated description' })
+          .set('Authorization', 'Bearer a-valid-token')
+          .expect(200);
+      }
+
+      verifyAsync.mockResolvedValueOnce({
+        sub: 'caller-2',
+        email: 'readonly@example.com',
+        role: UsuarioRole.READ_ONLY,
+      });
+
+      await request(server)
+        .patch('/items/item-1')
+        .send({ descripcion: 'Updated description' })
+        .set('Authorization', 'Bearer a-valid-token')
+        .expect(403);
+
+      await request(server)
+        .patch('/items/item-1')
+        .send({ descripcion: 'Updated description' })
+        .expect(401);
+
+      await app.close();
+    });
+
+    it('returns the updated item payload and 200 for a successful update', async () => {
+      const verifyAsync = jest.fn().mockResolvedValue({
+        sub: 'caller-1',
+        email: 'caller@example.com',
+        role: UsuarioRole.EDITOR,
+      });
+
+      const moduleRef = await Test.createTestingModule({
+        controllers: [InventoryController],
+        providers: [
+          { provide: InventoryService, useValue: inventoryService },
+          JwtAuthGuard,
+          RolesGuard,
+          { provide: JwtService, useValue: { verifyAsync } },
+        ],
+      }).compile();
+
+      const app = moduleRef.createNestApplication();
+      await app.init();
+
+      const response = await request(app.getHttpServer() as Server)
+        .patch('/items/item-1')
+        .send({ descripcion: 'Updated description' })
+        .set('Authorization', 'Bearer a-valid-token')
+        .expect(200);
+
+      expect(response.body).toEqual(CREATED_ITEM);
+      expect(inventoryService.update).toHaveBeenCalledWith(
+        'caller-1',
+        'item-1',
+        {
+          nombre: undefined,
+          tipo: undefined,
+          descripcion: 'Updated description',
+          dominioPropietario: undefined,
+          direccionRed: undefined,
+          properties: undefined,
+        },
+      );
+
+      await app.close();
+    });
+
+    it('returns 404 for PATCH /items/:id when the service reports the item does not exist', async () => {
+      const verifyAsync = jest.fn().mockResolvedValue({
+        sub: 'caller-1',
+        email: 'caller@example.com',
+        role: UsuarioRole.EDITOR,
+      });
+      inventoryService.update.mockRejectedValue(
+        new NotFoundException('Item not found.'),
+      );
+
+      const moduleRef = await Test.createTestingModule({
+        controllers: [InventoryController],
+        providers: [
+          { provide: InventoryService, useValue: inventoryService },
+          JwtAuthGuard,
+          RolesGuard,
+          { provide: JwtService, useValue: { verifyAsync } },
+        ],
+      }).compile();
+
+      const app = moduleRef.createNestApplication();
+      await app.init();
+
+      await request(app.getHttpServer() as Server)
+        .patch('/items/missing-item')
+        .send({ descripcion: 'x' })
+        .set('Authorization', 'Bearer a-valid-token')
+        .expect(404);
 
       await app.close();
     });

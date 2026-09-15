@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  NotFoundException,
 } from '@nestjs/common';
 import { ItemConfiguracion, Prisma, TipoAccion } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -22,11 +23,27 @@ export type CreateItemInput = {
   properties?: Prisma.InputJsonValue;
 };
 
+// Caller-shaped input for `InventoryService.update` (spec-3-3). Every field
+// is optional — `InventoryController` has already turned "absent from the
+// request body" into `undefined` before this service ever sees it, so
+// `!== undefined` is exactly "this field was actually supplied" (spec
+// Boundaries: "only keys actually present in the body are changed").
+export type UpdateItemInput = {
+  nombre?: string;
+  tipo?: string;
+  descripcion?: string;
+  dominioPropietario?: string;
+  direccionRed?: string;
+  properties?: Prisma.InputJsonValue;
+};
+
 export const INVALID_TIPO_MESSAGE = (tipo: string): string =>
   `'${tipo}' is not a recognized item type.`;
 
 export const NAME_ALREADY_EXISTS_MESSAGE =
   'An item with that name already exists.';
+
+export const ITEM_NOT_FOUND_MESSAGE = 'Item not found.';
 
 /**
  * Optional AND-combined filters for `list` (spec-3-2 Boundaries). Both are
@@ -136,6 +153,133 @@ export class InventoryService {
           tipo: item.tipo,
           properties: item.properties as Prisma.InputJsonValue,
         },
+      });
+
+      return item;
+    });
+  }
+
+  /**
+   * Partial update of an `ItemConfiguracion` (spec-3-3, FR-16) — only keys
+   * actually present in `dto` (i.e. `!== undefined`) are changed; everything
+   * else stays intact (Prisma partial `update`, never a full-row replace).
+   * `properties`, when supplied, is shallow-merged with the item's current
+   * `properties` (`{ ...existing, ...supplied }`) — top-level keys only, no
+   * recursive merge (spec Boundaries/Never).
+   *
+   * Mirrors `create`'s pattern throughout: `tipo` (when supplied) validated
+   * against `ITEM_TYPE_CATALOG` before any DB access; `nombre` (when
+   * supplied) trimmed once and checked case-insensitively for uniqueness —
+   * here excluding the item's own row — backed by the same `P2002`
+   * race-condition backstop; the row update and its `RegistroAuditoria`
+   * entry happen inside one `prisma.$transaction` (AD-3). Unlike `create`,
+   * there IS a "before" state: `cambios` records `{ before, after }` for
+   * exactly the fields that changed, not a full item snapshot (spec
+   * Boundaries).
+   */
+  async update(
+    usuarioId: string,
+    id: string,
+    dto: UpdateItemInput,
+  ): Promise<ItemConfiguracion> {
+    if (dto.tipo !== undefined && !ITEM_TYPE_CATALOG.includes(dto.tipo)) {
+      throw new BadRequestException(INVALID_TIPO_MESSAGE(dto.tipo));
+    }
+
+    // Trimmed once, up front — same reasoning as `create`: both the
+    // uniqueness check and the persisted value must agree.
+    const nombre = dto.nombre !== undefined ? dto.nombre.trim() : undefined;
+
+    const existingItem = await this.prisma.itemConfiguracion.findUnique({
+      where: { id },
+    });
+    if (!existingItem) {
+      throw new NotFoundException(ITEM_NOT_FOUND_MESSAGE);
+    }
+
+    if (nombre !== undefined) {
+      const duplicate = await this.prisma.itemConfiguracion.findFirst({
+        where: {
+          nombre: { equals: nombre, mode: 'insensitive' },
+          NOT: { id },
+        },
+      });
+      if (duplicate) {
+        throw new ConflictException(NAME_ALREADY_EXISTS_MESSAGE);
+      }
+    }
+
+    // Built up field-by-field so `data` (the Prisma partial update) and
+    // `cambios.before`/`cambios.after` (the audit entry) both cover exactly
+    // — and only — the fields this call actually supplied.
+    const data: Prisma.ItemConfiguracionUpdateInput = {};
+    const before: Record<string, unknown> = {};
+    const after: Record<string, unknown> = {};
+
+    if (nombre !== undefined) {
+      data.nombre = nombre;
+      before.nombre = existingItem.nombre;
+      after.nombre = nombre;
+    }
+    if (dto.descripcion !== undefined) {
+      data.descripcion = dto.descripcion;
+      before.descripcion = existingItem.descripcion;
+      after.descripcion = dto.descripcion;
+    }
+    if (dto.dominioPropietario !== undefined) {
+      data.dominioPropietario = dto.dominioPropietario;
+      before.dominioPropietario = existingItem.dominioPropietario;
+      after.dominioPropietario = dto.dominioPropietario;
+    }
+    if (dto.direccionRed !== undefined) {
+      data.direccionRed = dto.direccionRed;
+      before.direccionRed = existingItem.direccionRed;
+      after.direccionRed = dto.direccionRed;
+    }
+    if (dto.tipo !== undefined) {
+      data.tipo = dto.tipo;
+      before.tipo = existingItem.tipo;
+      after.tipo = dto.tipo;
+    }
+    if (dto.properties !== undefined) {
+      // Top-level shallow merge only (spec Boundaries/Never: "No
+      // deep/recursive merge of nested objects inside properties").
+      const mergedProperties = {
+        ...(existingItem.properties as Record<string, unknown>),
+        ...(dto.properties as Record<string, unknown>),
+      };
+      data.properties = mergedProperties as Prisma.InputJsonValue;
+      before.properties = existingItem.properties;
+      after.properties = mergedProperties;
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      let item: ItemConfiguracion;
+      try {
+        item = await tx.itemConfiguracion.update({
+          where: { id },
+          data,
+        });
+      } catch (error) {
+        // Same race-condition backstop as `create`: two concurrent updates
+        // renaming different items to the same (case-variant) name can both
+        // pass the findFirst->null check above; the loser hits the DB's
+        // unique constraint on `nombre` here.
+        if (
+          error instanceof Prisma.PrismaClientKnownRequestError &&
+          error.code === 'P2002'
+        ) {
+          throw new ConflictException(NAME_ALREADY_EXISTS_MESSAGE);
+        }
+        throw error;
+      }
+
+      await this.auditService.record(tx, {
+        usuarioId,
+        tipoAccion: TipoAccion.UPDATE,
+        entidad: 'ItemConfiguracion',
+        entidadId: item.id,
+        cambios: { before, after } as Prisma.InputJsonValue,
       });
 
       return item;

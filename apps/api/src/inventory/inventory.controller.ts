@@ -5,6 +5,8 @@ import {
   Get,
   HttpCode,
   HttpStatus,
+  Param,
+  Patch,
   Post,
   Query,
   Req,
@@ -48,6 +50,8 @@ export const INVALID_DOMINIO_PROPIETARIO_MESSAGE = `dominioPropietario must be a
 export const INVALID_DIRECCION_RED_MESSAGE = `direccionRed must be a string of ${MAX_DIRECCION_RED_LENGTH} characters or fewer, when provided`;
 export const INVALID_TIPO_FILTER_MESSAGE = `tipo must be a single string of ${MAX_TIPO_LENGTH} characters or fewer, when provided`;
 export const INVALID_TEXTO_FILTER_MESSAGE = `texto must be a single string of ${MAX_TEXTO_LENGTH} characters or fewer, when provided`;
+export const NO_FIELDS_TO_UPDATE_MESSAGE =
+  'At least one recognized field (nombre, descripcion, dominioPropietario, direccionRed, tipo, properties) must be supplied.';
 
 export class CreateItemRequestDto {
   nombre!: string;
@@ -56,6 +60,65 @@ export class CreateItemRequestDto {
   dominioPropietario?: string;
   direccionRed?: string;
   properties?: Prisma.InputJsonValue;
+}
+
+// Every field optional (spec-3-3 Boundaries: "Every field is optional in the
+// request body") — an absent key must reach `InventoryController.update` as
+// `undefined` so `InventoryService.update` can tell "not supplied" apart
+// from any real value.
+export class UpdateItemRequestDto {
+  nombre?: string;
+  descripcion?: string;
+  dominioPropietario?: string;
+  direccionRed?: string;
+  tipo?: string;
+  properties?: Prisma.InputJsonValue;
+}
+
+// Shared with `create`'s nombre check (spec-3-3 Boundaries: "the exact same
+// trim + case-insensitive uniqueness check as create") — `update` only calls
+// this when `nombre` was actually supplied, since it is optional there.
+function assertValidNombre(nombre: unknown): asserts nombre is string {
+  if (typeof nombre !== 'string' || nombre.trim().length === 0) {
+    throw new BadRequestException(MISSING_NOMBRE_MESSAGE);
+  }
+  if (nombre.length > MAX_NOMBRE_LENGTH) {
+    throw new BadRequestException(INVALID_NOMBRE_LENGTH_MESSAGE);
+  }
+}
+
+// Shared with `create`'s tipo shape check; the catalog check itself lives in
+// `InventoryService` (spec-3-3 Boundaries: "the exact same catalog
+// validation as create").
+function assertValidTipo(tipo: unknown): asserts tipo is string {
+  if (typeof tipo !== 'string' || tipo.trim().length === 0) {
+    throw new BadRequestException(MISSING_TIPO_MESSAGE);
+  }
+  if (tipo.length > MAX_TIPO_LENGTH) {
+    throw new BadRequestException(INVALID_TIPO_LENGTH_MESSAGE);
+  }
+}
+
+function assertValidOptionalString(
+  value: unknown,
+  maxLength: number,
+  message: string,
+): void {
+  if (
+    value !== undefined &&
+    (typeof value !== 'string' || value.length > maxLength)
+  ) {
+    throw new BadRequestException(message);
+  }
+}
+
+function assertValidOptionalProperties(value: unknown): void {
+  if (
+    value !== undefined &&
+    (typeof value !== 'object' || value === null || Array.isArray(value))
+  ) {
+    throw new BadRequestException(INVALID_PROPERTIES_MESSAGE);
+  }
 }
 
 /**
@@ -77,47 +140,24 @@ export class InventoryController {
     @Body() body: CreateItemRequestDto,
     @Req() request: AuthenticatedRequest,
   ): Promise<ItemConfiguracion> {
-    if (typeof body?.nombre !== 'string' || body.nombre.trim().length === 0) {
-      throw new BadRequestException(MISSING_NOMBRE_MESSAGE);
-    }
-    if (body.nombre.length > MAX_NOMBRE_LENGTH) {
-      throw new BadRequestException(INVALID_NOMBRE_LENGTH_MESSAGE);
-    }
-    if (typeof body?.tipo !== 'string' || body.tipo.trim().length === 0) {
-      throw new BadRequestException(MISSING_TIPO_MESSAGE);
-    }
-    if (body.tipo.length > MAX_TIPO_LENGTH) {
-      throw new BadRequestException(INVALID_TIPO_LENGTH_MESSAGE);
-    }
-    if (
-      body.descripcion !== undefined &&
-      (typeof body.descripcion !== 'string' ||
-        body.descripcion.length > MAX_DESCRIPCION_LENGTH)
-    ) {
-      throw new BadRequestException(INVALID_DESCRIPCION_MESSAGE);
-    }
-    if (
-      body.dominioPropietario !== undefined &&
-      (typeof body.dominioPropietario !== 'string' ||
-        body.dominioPropietario.length > MAX_DOMINIO_PROPIETARIO_LENGTH)
-    ) {
-      throw new BadRequestException(INVALID_DOMINIO_PROPIETARIO_MESSAGE);
-    }
-    if (
-      body.direccionRed !== undefined &&
-      (typeof body.direccionRed !== 'string' ||
-        body.direccionRed.length > MAX_DIRECCION_RED_LENGTH)
-    ) {
-      throw new BadRequestException(INVALID_DIRECCION_RED_MESSAGE);
-    }
-    if (
-      body.properties !== undefined &&
-      (typeof body.properties !== 'object' ||
-        body.properties === null ||
-        Array.isArray(body.properties))
-    ) {
-      throw new BadRequestException(INVALID_PROPERTIES_MESSAGE);
-    }
+    assertValidNombre(body?.nombre);
+    assertValidTipo(body?.tipo);
+    assertValidOptionalString(
+      body.descripcion,
+      MAX_DESCRIPCION_LENGTH,
+      INVALID_DESCRIPCION_MESSAGE,
+    );
+    assertValidOptionalString(
+      body.dominioPropietario,
+      MAX_DOMINIO_PROPIETARIO_LENGTH,
+      INVALID_DOMINIO_PROPIETARIO_MESSAGE,
+    );
+    assertValidOptionalString(
+      body.direccionRed,
+      MAX_DIRECCION_RED_LENGTH,
+      INVALID_DIRECCION_RED_MESSAGE,
+    );
+    assertValidOptionalProperties(body.properties);
 
     // `usuarioId` for the audit trail comes from the verified access token
     // (`JwtAuthGuard`), never from the request body — matches every other
@@ -130,6 +170,76 @@ export class InventoryController {
     }
 
     return this.inventoryService.create(request.user.sub, {
+      nombre: body.nombre,
+      tipo: body.tipo,
+      descripcion: body.descripcion,
+      dominioPropietario: body.dominioPropietario,
+      direccionRed: body.direccionRed,
+      properties: body.properties,
+    });
+  }
+
+  /**
+   * `PATCH /items/:id` (spec-3-3, FR-16) — partial update of an
+   * `ItemConfiguracion`. Same RBAC as `create` (Editor and above). Every
+   * field in the body is optional; only keys actually present are forwarded
+   * to `InventoryService.update` (as non-`undefined` values) — a body with
+   * none of the recognized fields is rejected here with a `400` before the
+   * service (or the DB) is ever touched, since there would be nothing to
+   * update and nothing worth an audit entry for (spec Boundaries).
+   */
+  @Patch(':id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UsuarioRole.EDITOR, UsuarioRole.MANAGER, UsuarioRole.ADMINISTRATOR)
+  @HttpCode(HttpStatus.OK)
+  async update(
+    @Param('id') id: string,
+    @Body() body: UpdateItemRequestDto,
+    @Req() request: AuthenticatedRequest,
+  ): Promise<ItemConfiguracion> {
+    const hasRecognizedField = [
+      body?.nombre,
+      body?.descripcion,
+      body?.dominioPropietario,
+      body?.direccionRed,
+      body?.tipo,
+      body?.properties,
+    ].some((value) => value !== undefined);
+    if (!hasRecognizedField) {
+      throw new BadRequestException(NO_FIELDS_TO_UPDATE_MESSAGE);
+    }
+
+    if (body.nombre !== undefined) {
+      assertValidNombre(body.nombre);
+    }
+    if (body.tipo !== undefined) {
+      assertValidTipo(body.tipo);
+    }
+    assertValidOptionalString(
+      body.descripcion,
+      MAX_DESCRIPCION_LENGTH,
+      INVALID_DESCRIPCION_MESSAGE,
+    );
+    assertValidOptionalString(
+      body.dominioPropietario,
+      MAX_DOMINIO_PROPIETARIO_LENGTH,
+      INVALID_DOMINIO_PROPIETARIO_MESSAGE,
+    );
+    assertValidOptionalString(
+      body.direccionRed,
+      MAX_DIRECCION_RED_LENGTH,
+      INVALID_DIRECCION_RED_MESSAGE,
+    );
+    assertValidOptionalProperties(body.properties);
+
+    // Same defensive posture as `create`: `request.user` is always set by
+    // this point (`JwtAuthGuard` runs first and throws otherwise); the check
+    // below is defensive only.
+    if (!request.user) {
+      throw new UnauthorizedException();
+    }
+
+    return this.inventoryService.update(request.user.sub, id, {
       nombre: body.nombre,
       tipo: body.tipo,
       descripcion: body.descripcion,

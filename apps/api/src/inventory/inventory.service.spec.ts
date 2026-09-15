@@ -1,9 +1,14 @@
 import { Test } from '@nestjs/testing';
-import { BadRequestException, ConflictException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  NotFoundException,
+} from '@nestjs/common';
 import { Prisma, TipoAccion } from '@prisma/client';
 import {
   InventoryService,
   NAME_ALREADY_EXISTS_MESSAGE,
+  ITEM_NOT_FOUND_MESSAGE,
 } from './inventory.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
@@ -32,6 +37,7 @@ describe('InventoryService', () => {
   let prisma: {
     itemConfiguracion: {
       findFirst: jest.Mock;
+      findUnique: jest.Mock;
       findMany: jest.Mock;
       count: jest.Mock;
     };
@@ -40,6 +46,7 @@ describe('InventoryService', () => {
   let tx: {
     itemConfiguracion: {
       create: jest.Mock<Promise<ItemRow>, [unknown]>;
+      update: jest.Mock<Promise<ItemRow>, [unknown]>;
     };
   };
   let auditService: { record: jest.Mock };
@@ -51,12 +58,16 @@ describe('InventoryService', () => {
         create: jest
           .fn<Promise<ItemRow>, [unknown]>()
           .mockResolvedValue(CREATED_ITEM),
+        update: jest
+          .fn<Promise<ItemRow>, [unknown]>()
+          .mockResolvedValue(CREATED_ITEM),
       },
     };
 
     prisma = {
       itemConfiguracion: {
         findFirst: jest.fn().mockResolvedValue(null),
+        findUnique: jest.fn().mockResolvedValue(CREATED_ITEM),
         findMany: jest.fn().mockResolvedValue([]),
         count: jest.fn().mockResolvedValue(0),
       },
@@ -245,6 +256,230 @@ describe('InventoryService', () => {
     await expect(
       service.create('user-1', { nombre: 'core-db', tipo: 'DATABASE' }),
     ).rejects.not.toThrow(NAME_ALREADY_EXISTS_MESSAGE);
+  });
+
+  // spec-3-3: `update(usuarioId, id, dto)` — partial update of an existing
+  // item. `prisma.itemConfiguracion.findUnique` supplies the "before" state
+  // (and the 404 check); the mutation + audit entry go through the same
+  // `tx`-scoped transaction pattern as `create`.
+  describe('update', () => {
+    const EXISTING_ITEM: ItemRow = {
+      id: 'item-1',
+      nombre: 'core-db',
+      descripcion: 'Core database',
+      dominioPropietario: 'platform',
+      direccionRed: '10.0.0.1',
+      tipo: 'DATABASE',
+      properties: { engine: 'postgres', version: '14' },
+    };
+
+    beforeEach(() => {
+      prisma.itemConfiguracion.findUnique.mockResolvedValue(EXISTING_ITEM);
+      tx.itemConfiguracion.update.mockResolvedValue(EXISTING_ITEM);
+    });
+
+    // I/O matrix row 1 + first Acceptance Criterion: only supplied fields
+    // change, one audit entry with {before, after} for exactly those fields.
+    it('updates only the supplied fields and records one audit entry with before/after for exactly those fields', async () => {
+      const result = await service.update('user-1', 'item-1', {
+        descripcion: 'Updated description',
+      });
+
+      expect(result).toEqual(EXISTING_ITEM);
+      expect(tx.itemConfiguracion.update).toHaveBeenCalledWith({
+        where: { id: 'item-1' },
+        data: { descripcion: 'Updated description' },
+      });
+      expect(auditService.record).toHaveBeenCalledTimes(1);
+      expect(auditService.record).toHaveBeenCalledWith(tx, {
+        usuarioId: 'user-1',
+        tipoAccion: TipoAccion.UPDATE,
+        entidad: 'ItemConfiguracion',
+        entidadId: EXISTING_ITEM.id,
+        cambios: {
+          before: { descripcion: 'Core database' },
+          after: { descripcion: 'Updated description' },
+        },
+      });
+    });
+
+    // I/O matrix row 2 + first Acceptance Criterion: properties is
+    // shallow-merged, top-level keys not mentioned survive untouched.
+    it('shallow-merges supplied properties with the existing properties, keeping untouched keys', async () => {
+      const mergedItem = {
+        ...EXISTING_ITEM,
+        properties: { engine: 'postgres', version: '15' },
+      };
+      tx.itemConfiguracion.update.mockResolvedValue(mergedItem);
+
+      const result = await service.update('user-1', 'item-1', {
+        properties: { version: '15' },
+      });
+
+      expect(result).toEqual(mergedItem);
+      expect(tx.itemConfiguracion.update).toHaveBeenCalledWith({
+        where: { id: 'item-1' },
+        data: { properties: { engine: 'postgres', version: '15' } },
+      });
+      expect(auditService.record).toHaveBeenCalledWith(tx, {
+        usuarioId: 'user-1',
+        tipoAccion: TipoAccion.UPDATE,
+        entidad: 'ItemConfiguracion',
+        entidadId: EXISTING_ITEM.id,
+        cambios: {
+          before: { properties: { engine: 'postgres', version: '14' } },
+          after: { properties: { engine: 'postgres', version: '15' } },
+        },
+      });
+    });
+
+    // No deep/recursive merge of nested objects inside properties (spec
+    // Boundaries/Never) — a nested object under a top-level key is replaced
+    // wholesale by the supplied value for that key, not merged into.
+    it('replaces a top-level properties key wholesale rather than deep-merging nested objects', async () => {
+      prisma.itemConfiguracion.findUnique.mockResolvedValue({
+        ...EXISTING_ITEM,
+        properties: { config: { a: 1, b: 2 } },
+      });
+
+      await service.update('user-1', 'item-1', {
+        properties: { config: { b: 3 } },
+      });
+
+      const { data } = tx.itemConfiguracion.update.mock.calls[0][0] as {
+        data: { properties: unknown };
+      };
+      expect(data.properties).toEqual({ config: { b: 3 } });
+    });
+
+    // I/O matrix row 3: nombre supplied -> trimmed + case-insensitively
+    // checked for uniqueness excluding the item's own row.
+    it('trims a supplied nombre and checks uniqueness excluding the item itself', async () => {
+      await service.update('user-1', 'item-1', { nombre: '  new-name  ' });
+
+      expect(prisma.itemConfiguracion.findFirst).toHaveBeenCalledWith({
+        where: {
+          nombre: { equals: 'new-name', mode: 'insensitive' },
+          NOT: { id: 'item-1' },
+        },
+      });
+      const { data } = tx.itemConfiguracion.update.mock.calls[0][0] as {
+        data: { nombre: string };
+      };
+      expect(data.nombre).toBe('new-name');
+    });
+
+    // Self-exclusion: re-supplying the item's own current nombre (unchanged)
+    // must not trip the uniqueness check against itself — the `NOT: { id }`
+    // clause is what makes this distinct from the "different item" collision
+    // case below, so it needs its own assertion rather than relying on that
+    // test alone.
+    it('accepts a nombre update that matches the item its own current nombre, excluding itself from the collision check', async () => {
+      const result = await service.update('user-1', 'item-1', {
+        nombre: EXISTING_ITEM.nombre,
+      });
+
+      expect(prisma.itemConfiguracion.findFirst).toHaveBeenCalledWith({
+        where: {
+          nombre: { equals: EXISTING_ITEM.nombre, mode: 'insensitive' },
+          NOT: { id: 'item-1' },
+        },
+      });
+      expect(result).toEqual(EXISTING_ITEM);
+      expect(tx.itemConfiguracion.update).toHaveBeenCalledWith({
+        where: { id: 'item-1' },
+        data: { nombre: EXISTING_ITEM.nombre },
+      });
+    });
+
+    // I/O matrix row 4: nombre collides case-insensitively with a different
+    // item -> 409, no state change.
+    it('rejects a nombre that collides case-insensitively with a different item, before starting a transaction', async () => {
+      prisma.itemConfiguracion.findFirst.mockResolvedValue({
+        ...EXISTING_ITEM,
+        id: 'other-item',
+        nombre: 'Other-Name',
+      });
+
+      await expect(
+        service.update('user-1', 'item-1', { nombre: 'other-name' }),
+      ).rejects.toThrow(ConflictException);
+      await expect(
+        service.update('user-1', 'item-1', { nombre: 'other-name' }),
+      ).rejects.toThrow(NAME_ALREADY_EXISTS_MESSAGE);
+
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    // Race-condition backstop, mirroring create's: the loser of two
+    // concurrent renames hits the DB's real unique constraint (P2002),
+    // surfaced as the same 409 rather than a raw 500.
+    it('converts a concurrent unique-constraint violation into a 409 conflict, recording no audit entry', async () => {
+      tx.itemConfiguracion.update.mockRejectedValue(
+        new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
+          code: 'P2002',
+          clientVersion: 'test',
+        }),
+      );
+
+      await expect(
+        service.update('user-1', 'item-1', { nombre: 'core-db' }),
+      ).rejects.toThrow(ConflictException);
+      expect(auditService.record).not.toHaveBeenCalled();
+    });
+
+    // I/O matrix row 5: tipo not in the catalog -> 400, no DB access at all,
+    // no transaction started.
+    it('rejects a tipo outside the static catalog with a BadRequestException, never touching the DB', async () => {
+      await expect(
+        service.update('user-1', 'item-1', { tipo: 'NOT_A_TYPE' }),
+      ).rejects.toThrow(BadRequestException);
+
+      expect(prisma.itemConfiguracion.findUnique).not.toHaveBeenCalled();
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    // I/O matrix row 6: unknown item id -> 404, no transaction started.
+    it('rejects an unknown item id with a NotFoundException, before starting a transaction', async () => {
+      prisma.itemConfiguracion.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.update('user-1', 'missing-item', { descripcion: 'x' }),
+      ).rejects.toThrow(NotFoundException);
+      await expect(
+        service.update('user-1', 'missing-item', { descripcion: 'x' }),
+      ).rejects.toThrow(ITEM_NOT_FOUND_MESSAGE);
+
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    // A field simply absent from dto (undefined) must never appear in the
+    // Prisma `data` payload nor in the audit before/after -- otherwise an
+    // absent key would be indistinguishable from "set to undefined".
+    it('leaves fields absent from dto entirely untouched in both the Prisma update and the audit payload', async () => {
+      await service.update('user-1', 'item-1', { direccionRed: '10.0.0.2' });
+
+      expect(tx.itemConfiguracion.update).toHaveBeenCalledWith({
+        where: { id: 'item-1' },
+        data: { direccionRed: '10.0.0.2' },
+      });
+      const [, auditCall] = auditService.record.mock.calls[0] as [
+        unknown,
+        { cambios: { before: object; after: object } },
+      ];
+      expect(Object.keys(auditCall.cambios.before)).toEqual(['direccionRed']);
+      expect(Object.keys(auditCall.cambios.after)).toEqual(['direccionRed']);
+    });
+
+    // Same all-or-nothing guarantee as create: a failure from
+    // AuditService.record propagates out of update() unchanged.
+    it('propagates a failure from AuditService.record, never swallowing it as a partial success', async () => {
+      auditService.record.mockRejectedValue(new Error('audit write failed'));
+
+      await expect(
+        service.update('user-1', 'item-1', { descripcion: 'x' }),
+      ).rejects.toThrow('audit write failed');
+    });
   });
 
   // spec-3-2: `list(filters, page, pageSize)` — the sole additional read
