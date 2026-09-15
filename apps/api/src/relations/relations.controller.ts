@@ -2,9 +2,12 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   HttpStatus,
+  Param,
+  Patch,
   Post,
   Query,
   Req,
@@ -36,11 +39,24 @@ export const MISSING_ORIGEN_TIPO_MESSAGE = 'origenTipo is required';
 export const MISSING_DESTINO_TIPO_MESSAGE = 'destinoTipo is required';
 export const INVALID_ORIGEN_TIPO_MESSAGE = `origenTipo must be a single string of ${MAX_TIPO_LENGTH} characters or fewer`;
 export const INVALID_DESTINO_TIPO_MESSAGE = `destinoTipo must be a single string of ${MAX_TIPO_LENGTH} characters or fewer`;
+export const NO_FIELDS_TO_UPDATE_MESSAGE =
+  'At least one recognized field (tipo, descripcion) must be supplied.';
 
 export class CreateRelationRequestDto {
   origenId!: string;
   destinoId!: string;
   tipo!: string;
+  descripcion?: string;
+}
+
+// Every field optional (spec-4-2 Boundaries) — an absent key must reach
+// `RelationsController.update` as `undefined` so `RelationsService.update`
+// can tell "not supplied" apart from any real value. Deliberately has no
+// `origenId`/`destinoId` field at all — not merely ignored if present, but
+// not part of the accepted shape (spec Boundaries/Never), so there is no
+// ambiguity about whether supplying them silently does nothing.
+export class UpdateRelationRequestDto {
+  tipo?: string;
   descripcion?: string;
 }
 
@@ -151,6 +167,73 @@ export class RelationsController {
       tipo: body.tipo,
       descripcion: body.descripcion,
     });
+  }
+
+  /**
+   * `PATCH /relations/:id` (spec-4-2, FR-21) — partial update of a
+   * `Relacion`. Same RBAC as `create` (Editor and above). Only `tipo`
+   * and/or `descripcion` may be supplied — `origenId`/`destinoId` are not
+   * part of `UpdateRelationRequestDto`'s shape at all (spec Boundaries/
+   * Never). A body with neither recognized field is rejected here with a
+   * `400` before the service (or the DB) is ever touched, mirroring
+   * `InventoryController.update`'s `NO_FIELDS_TO_UPDATE_MESSAGE` gate
+   * exactly.
+   */
+  @Patch(':id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UsuarioRole.EDITOR, UsuarioRole.MANAGER, UsuarioRole.ADMINISTRATOR)
+  @HttpCode(HttpStatus.OK)
+  async update(
+    @Param('id') id: string,
+    @Body() body: UpdateRelationRequestDto,
+    @Req() request: AuthenticatedRequest,
+  ): Promise<Relacion> {
+    const hasRecognizedField = [body?.tipo, body?.descripcion].some(
+      (value) => value !== undefined,
+    );
+    if (!hasRecognizedField) {
+      throw new BadRequestException(NO_FIELDS_TO_UPDATE_MESSAGE);
+    }
+
+    if (body.tipo !== undefined) {
+      assertValidTipo(body.tipo);
+    }
+    assertValidOptionalDescripcion(body.descripcion);
+
+    // Same defensive posture as `create`: `request.user` is always set by
+    // this point (`JwtAuthGuard` runs first and throws otherwise); the check
+    // below is defensive only.
+    if (!request.user) {
+      throw new UnauthorizedException();
+    }
+
+    return this.relationsService.update(request.user.sub, id, {
+      tipo: body.tipo,
+      descripcion: body.descripcion,
+    });
+  }
+
+  /**
+   * `DELETE /relations/:id` (spec-4-2) — permanently removes a `Relacion`.
+   * Same RBAC as `create`/`update` (Editor and above). `204 No Content` with
+   * an empty body, same as `DELETE /items/:id`.
+   */
+  @Delete(':id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UsuarioRole.EDITOR, UsuarioRole.MANAGER, UsuarioRole.ADMINISTRATOR)
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async remove(
+    @Param('id') id: string,
+    @Req() request: AuthenticatedRequest,
+  ): Promise<void> {
+    // Same defensive posture as `create`/`update`: `request.user` is always
+    // set by this point (`JwtAuthGuard` runs first and throws otherwise);
+    // the check below is defensive only.
+    if (!request.user) {
+      throw new UnauthorizedException();
+    }
+
+    await this.relationsService.remove(request.user.sub, id);
   }
 
   /**
