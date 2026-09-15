@@ -140,3 +140,35 @@ model RegistroAuditoria {
   @@index([entidad, entidadId])
   @@index([fecha])
 }
+
+// The inventory's sole record type for this story (spec-3-1, FR-12): owned
+// exclusively by `InventoryModule` (AD-1) — no other module writes it
+// directly via Prisma. `tipo` is a plain `String`, not a Prisma enum,
+// validated at the service layer against the static catalog in
+// `item-type-catalog.ts` — the same reasoning as `RegistroAuditoria.entidad`
+// (a new type is a catalog-array edit, never a migration, per FR-13).
+// `properties` is `Json`, intentionally unvalidated against any per-type
+// shape (AD-8) — the brief's documented, accepted limitation for this
+// version.
+//
+// `nombre` carries a real (case-sensitive) `@unique` DB constraint as a
+// race-condition backstop only; the actual uniqueness rule is
+// case-insensitive (NFR3) and enforced by `InventoryService.create`'s
+// case-insensitive `findFirst` check before create, mirroring
+// `InviteService.invite`'s email-conflict `P2002`-catch pattern.
+model ItemConfiguracion {
+  id                 String   @id @default(uuid())
+  nombre             String   @unique
+  descripcion        String?
+  dominioPropietario String?
+  direccionRed       String?
+  tipo               String
+  properties         Json     @default("{}")
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  // Story 3.2 (search/filter/list) filters by tipo — indexed from the start
+  // rather than as a predictable follow-up migration (the pattern Story 1.5
+  // had to retrofit after review).
+  @@index([tipo])
+}
