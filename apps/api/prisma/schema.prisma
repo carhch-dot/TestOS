@@ -171,4 +171,40 @@ model ItemConfiguracion {
   // rather than as a predictable follow-up migration (the pattern Story 1.5
   // had to retrofit after review).
   @@index([tipo])
+  relacionesOrigen  Relacion[] @relation("RelacionOrigen")
+  relacionesDestino Relacion[] @relation("RelacionDestino")
+}
+
+// A directed, typed link between two `ItemConfiguracion` rows (spec-4-1,
+// FR-18): "server hosts service", "service depends on database", etc. Owned
+// exclusively by `RelationsModule` (AD-1) — no other module ever writes it
+// directly via Prisma. `tipo` is a plain `String`, not a Prisma enum, same
+// catalog-array rationale as `ItemConfiguracion.tipo` (AD-8) — validated at
+// the service layer against `RELATION_TYPE_CATALOG`.
+//
+// `origenId`/`destinoId` use Prisma's default `onDelete: Restrict`: a
+// hard-deleting `DELETE /items/:id` on an item that still has any
+// relationship must fail cleanly (`InventoryService.remove` catches the
+// resulting P2003) rather than silently cascading, which would delete
+// `Relacion` rows with no `RegistroAuditoria` entry for them — the same
+// precedent as `RegistroAuditoria.usuarioId -> Usuario`.
+//
+// The unique constraint on `(origenId, destinoId, tipo)` is the exact
+// natural key FR-19 defines a duplicate by, and also backstops
+// `RelationsService.create`'s up-front `findFirst` duplicate check against a
+// concurrent race, mirroring `ItemConfiguracion.nombre`'s pattern.
+model Relacion {
+  id          String   @id @default(uuid())
+  origenId    String
+  origen      ItemConfiguracion @relation("RelacionOrigen", fields: [origenId], references: [id])
+  destinoId   String
+  destino     ItemConfiguracion @relation("RelacionDestino", fields: [destinoId], references: [id])
+  tipo        String
+  descripcion String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([origenId, destinoId, tipo])
+  @@index([origenId])
+  @@index([destinoId])
 }

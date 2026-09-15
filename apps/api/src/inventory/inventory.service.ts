@@ -45,6 +45,9 @@ export const NAME_ALREADY_EXISTS_MESSAGE =
 
 export const ITEM_NOT_FOUND_MESSAGE = 'Item not found.';
 
+export const ITEM_HAS_RELATIONSHIPS_MESSAGE =
+  'Cannot delete an item that still has relationships.';
+
 /**
  * Optional AND-combined filters for `list` (spec-3-2 Boundaries). Both are
  * caller-supplied via `InventoryController`, which has already turned an
@@ -335,6 +338,17 @@ export class InventoryService {
           error.code === 'P2025'
         ) {
           throw new NotFoundException(ITEM_NOT_FOUND_MESSAGE);
+        }
+        // Story 4.1's `Relacion.origenId`/`destinoId` FKs use Prisma's
+        // default `onDelete: Restrict` (spec-4-1 Boundaries): hard-deleting
+        // an item that still has any relationship must fail cleanly with a
+        // 409 rather than a raw 500 — the exact same shape as the P2025
+        // catch above, one more branch.
+        if (
+          error instanceof Prisma.PrismaClientKnownRequestError &&
+          error.code === 'P2003'
+        ) {
+          throw new ConflictException(ITEM_HAS_RELATIONSHIPS_MESSAGE);
         }
         throw error;
       }

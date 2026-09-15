@@ -9,6 +9,7 @@ import {
   InventoryService,
   NAME_ALREADY_EXISTS_MESSAGE,
   ITEM_NOT_FOUND_MESSAGE,
+  ITEM_HAS_RELATIONSHIPS_MESSAGE,
 } from './inventory.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
@@ -615,8 +616,30 @@ describe('InventoryService', () => {
       expect(auditService.record).not.toHaveBeenCalled();
     });
 
-    // A non-P2025 error out of the transaction must not be misclassified as
-    // a not-found.
+    // spec-4-1 I/O matrix's "Delete a related item" row: `Relacion`'s
+    // `origenId`/`destinoId` FKs use `onDelete: Restrict`, so deleting an
+    // item that still has >=1 relation hits Prisma's foreign-key violation
+    // (P2003) here — surfaced as a clean 409 rather than a raw 500, no
+    // audit entry recorded, mirroring the P2025 catch immediately above.
+    it('converts a foreign-key violation (P2003, item still has relationships) into a 409 conflict, recording no audit entry', async () => {
+      tx.itemConfiguracion.delete.mockRejectedValue(
+        new Prisma.PrismaClientKnownRequestError(
+          'Foreign key constraint failed',
+          { code: 'P2003', clientVersion: 'test' },
+        ),
+      );
+
+      await expect(service.remove('user-1', 'item-1')).rejects.toThrow(
+        ConflictException,
+      );
+      await expect(service.remove('user-1', 'item-1')).rejects.toThrow(
+        ITEM_HAS_RELATIONSHIPS_MESSAGE,
+      );
+      expect(auditService.record).not.toHaveBeenCalled();
+    });
+
+    // A non-P2025/P2003 error out of the transaction must not be
+    // misclassified as a not-found or a relationship conflict.
     it('rethrows a non-P2025 error unchanged', async () => {
       tx.itemConfiguracion.delete.mockRejectedValue(
         new Error('connection lost'),
